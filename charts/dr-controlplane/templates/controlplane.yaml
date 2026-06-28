@@ -1,0 +1,108 @@
+{{- if .Values.controlplane.enabled }}
+{{- $ns := .Values.namespace -}}
+{{- $name := printf "%s-controlplane" (include "dr.fullname" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+data:
+  # The OCM control plane reads ocmconfig.yaml from --controlplane-config-dir.
+  # External etcd mode (not the embedded single node), pointed at the 3 DC quorum.
+  ocmconfig.yaml: |
+    dataDirectory: /.ocm
+    apiserver:
+      externalHostname: {{ .Values.controlplane.externalHostname }}
+      port: {{ .Values.controlplane.port }}
+    etcd:
+      mode: external
+      prefix: {{ .Values.controlplane.etcdPrefix }}
+      servers:
+      {{- range (include "dr.etcdEndpoints" . | splitList ",") }}
+        - {{ . }}
+      {{- end }}
+      {{- if .Values.controlplane.etcdTLSSecret }}
+      caFile: /etc/etcd-tls/ca.crt
+      certFile: /etc/etcd-tls/tls.crt
+      keyFile: /etc/etcd-tls/tls.key
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+spec:
+  replicas: {{ .Values.controlplane.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dr.name" . }}
+      app.kubernetes.io/component: controlplane
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ tpl (.Files.Get "templates/controlplane.yaml") . | sha256sum }}
+      labels:
+        {{- include "dr.labels" . | nindent 8 }}
+        app.kubernetes.io/component: controlplane
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controlplane
+          image: {{ required "controlplane.image is required when controlplane.enabled is true" .Values.controlplane.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["controlplane"]
+          args:
+            - server
+            - --controlplane-config-dir=/controlplane_config
+          ports:
+            - name: https
+              containerPort: {{ .Values.controlplane.port }}
+          volumeMounts:
+            - name: config
+              mountPath: /controlplane_config
+              readOnly: true
+            {{- if .Values.controlplane.etcdTLSSecret }}
+            - name: etcd-tls
+              mountPath: /etc/etcd-tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        {{- if .Values.controlplane.etcdTLSSecret }}
+        - name: etcd-tls
+          secret:
+            secretName: {{ .Values.controlplane.etcdTLSSecret }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+spec:
+  # The single front endpoint clients name in their kubeconfig. Set type to
+  # LoadBalancer (or front it with a GSLB) to expose it across data centers.
+  type: {{ .Values.controlplane.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "dr.name" . }}
+    app.kubernetes.io/component: controlplane
+  ports:
+    - name: https
+      port: {{ .Values.controlplane.port }}
+      targetPort: https
+{{- end }}

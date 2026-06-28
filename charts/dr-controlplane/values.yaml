@@ -1,0 +1,98 @@
+# Default values for dr-controlplane.
+# The common DC failover service has four deployable pieces: the etcd quorum, the
+# OCM control plane (config only, not forked), the per data center agent, and the
+# topology controller. Install the etcd and control plane once. Install the agent
+# once per data center (set agent.dcName). Install the topology controller once.
+
+# Namespace that holds the coordination Leases. Created when createNamespace is true.
+namespace: dc-failover
+createNamespace: true
+
+# Container image for the dr-agent, dr-topology, and drctl binaries (one image, three binaries).
+image:
+  repository: ghcr.io/appscode/dr-controlplane
+  tag: ""          # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# ----------------------------------------------------------------------------
+# etcd: the three member quorum, one member per data center. The etcd majority is
+# the failover authority, so a partitioned minority cannot move a Lease.
+# ----------------------------------------------------------------------------
+etcd:
+  # deploy a three replica StatefulSet for single cluster dev and test. For real
+  # multi data center production, set deploy=false and point the control plane at
+  # a real etcd whose three members live one per data center (externalEndpoints).
+  deploy: true
+  replicas: 3
+  image: quay.io/coreos/etcd:v3.6.5
+  storageClassName: ""
+  storageSize: 1Gi
+  # WAN tuning. Set comfortably above the inter data center round trip time so
+  # cross DC latency does not trigger spurious etcd elections.
+  heartbeatIntervalMs: 500
+  electionTimeoutMs: 5000
+  # Used when deploy=false. The endpoints of an external three DC etcd cluster.
+  externalEndpoints: []
+  #  - https://etcd-dc-a.example.com:2379
+  #  - https://etcd-dc-b.example.com:2379
+  #  - https://etcd-dc-c.example.com:2379
+
+# ----------------------------------------------------------------------------
+# controlplane: an OCM control plane in external etcd mode, serving the Lease API.
+# One replica per Member data center, behind one load balanced endpoint.
+# ----------------------------------------------------------------------------
+controlplane:
+  enabled: true
+  # OCM control plane image that serves coordination.k8s.io (the Lease API) on
+  # external etcd, run as: <image> server --controlplane-config-dir=/controlplane_config.
+  # Required when controlplane.enabled is true.
+  image: ""
+  replicas: 2
+  externalHostname: dc-failover.example.com
+  port: 9443
+  etcdPrefix: /registry
+  # TLS material for talking to etcd, as a Secret with ca.crt, tls.crt, tls.key.
+  etcdTLSSecret: ""
+  service:
+    # ClusterIP for in cluster, or LoadBalancer to expose the single front endpoint.
+    type: ClusterIP
+
+# ----------------------------------------------------------------------------
+# agent: one per data center. Renews the DC health Lease and, for Member scopes,
+# contends for the primary DC Lease. Arbiter and Witness DCs never contend.
+# ----------------------------------------------------------------------------
+agent:
+  enabled: true
+  dcName: ""        # REQUIRED when enabled, for example dc-a
+  # Kubeconfig Secret for the coordination control plane (key: kubeconfig).
+  # Empty uses the in cluster config (only correct when the agent runs inside the
+  # control plane's own cluster).
+  coordKubeconfigSecret: ""
+  metricsAddr: ":8080"
+  health:
+    leaseDurationSeconds: 15
+    renewIntervalSeconds: 5
+  election:
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  resources: {}
+
+# ----------------------------------------------------------------------------
+# topology: one controller. Reads PlacementPolicies on the hub, ensures a primary
+# DC Lease per scope on the coordination control plane.
+# ----------------------------------------------------------------------------
+topology:
+  enabled: true
+  requireSpread: true
+  hubKubeconfigSecret: ""    # key: kubeconfig. Empty uses in cluster (hub).
+  coordKubeconfigSecret: ""  # key: kubeconfig. Empty falls back to the hub config.
+  # Static cluster to region mapping for spread validation, for example:
+  # regions: { dc-a: us-east-1, dc-b: us-west-2, dc-c: eu-west-1 }
+  regions: {}
+  resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

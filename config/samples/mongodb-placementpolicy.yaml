@@ -1,0 +1,28 @@
+# MongoDB, two data Members plus a data-bearing Witness, group failover scope.
+# A MongoDB witness must carry data to satisfy w:"majority" writes, yet must never
+# be elected primary, so its role is Witness (not Arbiter). It follows its own
+# primary-dc-orders Lease, independent of other groups.
+apiVersion: apps.k8s.appscode.com/v1
+kind: PlacementPolicy
+metadata:
+  name: mongodb-orders-geo
+spec:
+  clusterSpreadConstraint:
+    slice:
+      projectNamespace: kubeslice-project
+      sliceName: kubedb-geo
+    failoverPolicy:
+      mode: TwoDC
+      trigger:
+        scope: Group
+        group: orders
+    distributionRules:
+      - clusterName: dc-a
+        replicaIndices: [0, 1]
+        role: Member
+      - clusterName: dc-b
+        replicaIndices: [2, 3]
+        role: Member
+      - clusterName: dc-c
+        replicaIndices: [4]
+        role: Witness

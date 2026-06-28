@@ -1,0 +1,7 @@
+.go/
+bin/
+.idea/
+*.test
+*.out
+coverage.txt
+.DS_Store

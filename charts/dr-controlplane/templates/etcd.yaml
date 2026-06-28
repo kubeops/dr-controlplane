@@ -1,0 +1,101 @@
+{{- if .Values.etcd.deploy }}
+{{- $svc := include "dr.etcdServiceName" . -}}
+{{- $ns := .Values.namespace -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: {{ include "dr.name" . }}
+    app.kubernetes.io/component: etcd
+  ports:
+    - name: client
+      port: 2379
+    - name: peer
+      port: 2380
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $svc }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  serviceName: {{ $svc }}
+  replicas: {{ .Values.etcd.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dr.name" . }}
+      app.kubernetes.io/component: etcd
+  template:
+    metadata:
+      labels:
+        {{- include "dr.labels" . | nindent 8 }}
+        app.kubernetes.io/component: etcd
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Spread the three members across failure domains (one per data center in production).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: topology.kubernetes.io/zone
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{ include "dr.name" . }}
+                    app.kubernetes.io/component: etcd
+      containers:
+        - name: etcd
+          image: {{ .Values.etcd.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: client
+              containerPort: 2379
+            - name: peer
+              containerPort: 2380
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command:
+            - /usr/local/bin/etcd
+            - --name=$(POD_NAME)
+            - --data-dir=/var/run/etcd/default.etcd
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://$(POD_NAME).{{ $svc }}.{{ $ns }}.svc:2379
+            - --initial-advertise-peer-urls=http://$(POD_NAME).{{ $svc }}.{{ $ns }}.svc:2380
+            - --initial-cluster-state=new
+            - --initial-cluster-token=dr-etcd
+            - --heartbeat-interval={{ .Values.etcd.heartbeatIntervalMs }}
+            - --election-timeout={{ .Values.etcd.electionTimeoutMs }}
+            - --initial-cluster={{ range $i := until (int .Values.etcd.replicas) }}{{ if $i }},{{ end }}{{ $svc }}-{{ $i }}=http://{{ $svc }}-{{ $i }}.{{ $svc }}.{{ $ns }}.svc:2380{{ end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/run/etcd
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.etcd.storageClassName }}
+        storageClassName: {{ .Values.etcd.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.etcd.storageSize }}
+{{- end }}

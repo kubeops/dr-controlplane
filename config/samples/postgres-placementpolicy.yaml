@@ -1,0 +1,26 @@
+# Postgres, two data Members plus a data-less Arbiter, global failover scope.
+# The single primary-dc Lease drives failover; dc-c votes in etcd but never holds
+# the Lease and holds no data.
+apiVersion: apps.k8s.appscode.com/v1
+kind: PlacementPolicy
+metadata:
+  name: postgres-ha-geo
+spec:
+  clusterSpreadConstraint:
+    slice:
+      projectNamespace: kubeslice-project
+      sliceName: kubedb-geo
+    failoverPolicy:
+      mode: TwoDC
+      trigger:
+        scope: Global
+    distributionRules:
+      - clusterName: dc-a
+        replicaIndices: [0]
+        role: Member
+      - clusterName: dc-b
+        replicaIndices: [1]
+        role: Member
+      - clusterName: dc-c
+        replicaIndices: []
+        role: Arbiter
