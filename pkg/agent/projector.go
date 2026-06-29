@@ -50,20 +50,6 @@ const (
 // renewTime; a partitioned agent stops seeing Lease updates so the value freezes
 // and the fence trips. Projection failures never take down the agent.
 func (a *Agent) runProjector(ctx context.Context) {
-	cfg, err := a.opts.SpokeRESTConfig()
-	if err != nil {
-		klog.ErrorS(err, "active DC marker projection disabled: no spoke client config")
-		return
-	}
-	spoke, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		klog.ErrorS(err, "active DC marker projection disabled: cannot build spoke client")
-		return
-	}
-	a.mu.Lock()
-	a.spoke = spoke
-	a.mu.Unlock()
-
 	interval := a.opts.MarkerRefreshInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -71,11 +57,34 @@ func (a *Agent) runProjector(ctx context.Context) {
 	klog.InfoS("active DC marker projector running", "namespace", a.opts.MarkerNamespace, "interval", interval.String())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	var spoke kubernetes.Interface
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if spoke == nil {
+				// Build the spoke client lazily and retry on every tick. A transient
+				// failure here must not disable projection for the agent's lifetime:
+				// this DC could be elected active while its marker is never written,
+				// and the consumer fence would then hold every leader read only.
+				cfg, err := a.opts.SpokeRESTConfig()
+				if err != nil {
+					klog.ErrorS(err, "active DC marker projection waiting: no spoke client config")
+					continue
+				}
+				s, err := kubernetes.NewForConfig(cfg)
+				if err != nil {
+					klog.ErrorS(err, "active DC marker projection waiting: cannot build spoke client")
+					continue
+				}
+				spoke = s
+				a.mu.Lock()
+				a.spoke = spoke
+				a.mu.Unlock()
+				klog.InfoS("active DC marker projector spoke client ready")
+			}
 			a.projectMarkers(ctx, spoke)
 		}
 	}
