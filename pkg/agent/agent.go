@@ -37,12 +37,21 @@ import (
 type Agent struct {
 	opts    Options
 	cs      kubernetes.Interface
+	spoke   kubernetes.Interface
 	metrics *Metrics
 
 	rootCtx context.Context
 
 	mu       sync.Mutex
 	electors map[string]*scopeElector // keyed by primary Lease name
+	holders  map[string]markerState   // keyed by primary Lease name
+}
+
+// markerState is the per scope value the projector writes to the spoke: which DC
+// the quorum trusts and the Lease renewTime that proves the view is current.
+type markerState struct {
+	dc    string
+	renew time.Time
 }
 
 // New builds an Agent.
@@ -52,6 +61,7 @@ func New(opts Options, cs kubernetes.Interface, metrics *Metrics) *Agent {
 		cs:       cs,
 		metrics:  metrics,
 		electors: map[string]*scopeElector{},
+		holders:  map[string]markerState{},
 	}
 }
 
@@ -60,6 +70,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.rootCtx = ctx
 
 	go a.runHealthRenewer(ctx)
+	go a.runProjector(ctx)
 
 	factory := informers.NewSharedInformerFactoryWithOptions(a.cs, 10*time.Minute, informers.WithNamespace(a.opts.Namespace))
 	informer := factory.Coordination().V1().Leases().Informer()
@@ -106,6 +117,7 @@ func (a *Agent) onDelete(obj interface{}) {
 	a.mu.Lock()
 	e := a.electors[l.Name]
 	delete(a.electors, l.Name)
+	delete(a.holders, l.Name)
 	a.mu.Unlock()
 	if e != nil {
 		e.stop()
@@ -126,6 +138,18 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 
 	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember)
 	a.electorFor(scope, l.Name).setDesired(contend)
+
+	// Record the holder and the Lease renewTime for the projector. Tying the marker
+	// freshness to the Lease renewTime makes the fence fail closed: if this agent is
+	// partitioned from the coordination plane the renewTime stops advancing, the
+	// marker goes stale, and the local leader demotes itself.
+	var renew time.Time
+	if l.Spec.RenewTime != nil {
+		renew = l.Spec.RenewTime.Time
+	}
+	a.mu.Lock()
+	a.holders[l.Name] = markerState{dc: holder, renew: renew}
+	a.mu.Unlock()
 
 	// Once the target holds the Lease, the holder clears the handoff annotation
 	// so the system returns to normal contention.
