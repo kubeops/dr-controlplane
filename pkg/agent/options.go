@@ -73,9 +73,18 @@ func DefaultOptions() Options {
 		HealthRenewInterval:   5 * time.Second,
 		MarkerNamespace:       leases.DefaultNamespace,
 		MarkerRefreshInterval: 5 * time.Second,
+		// Safety invariant: the consumer's marker fence TTL (pg-coordinator
+		// dcMarkerTTL, 30s) plus cross-DC clock skew must be strictly LESS than
+		// LeaseDuration. The marker renewTime tracks this Lease's renewTime, so a
+		// partitioned active DC self-fences at lastRenew + fence TTL; a survivor can
+		// only acquire the expired Lease at lastRenew + LeaseDuration. Keeping the
+		// fence TTL inside LeaseDuration guarantees the old active DC goes read-only
+		// before any new DC becomes writable, so there is no split-brain window.
+		// (RetryPeriod stays small so the holder restamps renewTime well inside the
+		// fence TTL during normal operation.)
 		Election: ElectionConfig{
-			LeaseDuration: 15 * time.Second,
-			RenewDeadline: 10 * time.Second,
+			LeaseDuration: 45 * time.Second,
+			RenewDeadline: 30 * time.Second,
 			RetryPeriod:   2 * time.Second,
 		},
 	}
