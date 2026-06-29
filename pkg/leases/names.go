@@ -52,6 +52,13 @@ const (
 
 	// AnnScope records the trigger scope (Global or the group name) for observability.
 	AnnScope = "dr.open-cluster-management.io/scope"
+
+	// AnnQuiesce names the data center whose primary must hold read only for a
+	// planned switchover, so the target can replay to the active primary's frozen
+	// LSN for zero RPO. It is the current holder. The agent projects it into the
+	// marker as data.quiesce; the active DC's coordinator honors it. Cleared once
+	// the switchover completes (the Lease moves and the old DC self fences anyway).
+	AnnQuiesce = "dr.open-cluster-management.io/quiesce"
 )
 
 const (

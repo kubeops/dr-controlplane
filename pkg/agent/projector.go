@@ -37,6 +37,9 @@ import (
 const (
 	MarkerKeyActiveDC = "activeDC"
 	MarkerKeyRenew    = "renewTime"
+	// MarkerKeyQuiesce names the DC whose primary must hold read only for a planned
+	// switchover. Empty in steady state. The active DC's coordinator reads it.
+	MarkerKeyQuiesce = "quiesce"
 
 	markerManagedByLabel = "app.kubernetes.io/managed-by"
 	markerManagedByValue = "dr-controlplane-agent"
@@ -101,6 +104,7 @@ func (a *Agent) upsertMarker(ctx context.Context, spoke kubernetes.Interface, na
 	data := map[string]string{
 		MarkerKeyActiveDC: st.dc,
 		MarkerKeyRenew:    renew,
+		MarkerKeyQuiesce:  st.quiesce,
 	}
 	cms := spoke.CoreV1().ConfigMaps(a.opts.MarkerNamespace)
 	cur, err := cms.Get(ctx, name, metav1.GetOptions{})
@@ -119,7 +123,9 @@ func (a *Agent) upsertMarker(ctx context.Context, spoke kubernetes.Interface, na
 	if err != nil {
 		return err
 	}
-	if cur.Data[MarkerKeyActiveDC] == data[MarkerKeyActiveDC] && cur.Data[MarkerKeyRenew] == data[MarkerKeyRenew] {
+	if cur.Data[MarkerKeyActiveDC] == data[MarkerKeyActiveDC] &&
+		cur.Data[MarkerKeyRenew] == data[MarkerKeyRenew] &&
+		cur.Data[MarkerKeyQuiesce] == data[MarkerKeyQuiesce] {
 		return nil
 	}
 	cur.Data = data

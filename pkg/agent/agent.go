@@ -48,10 +48,12 @@ type Agent struct {
 }
 
 // markerState is the per scope value the projector writes to the spoke: which DC
-// the quorum trusts and the Lease renewTime that proves the view is current.
+// the quorum trusts, the Lease renewTime that proves the view is current, and the
+// DC (if any) the hub has asked to quiesce for a planned switchover.
 type markerState struct {
-	dc    string
-	renew time.Time
+	dc      string
+	renew   time.Time
+	quiesce string
 }
 
 // New builds an Agent.
@@ -147,8 +149,11 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	if l.Spec.RenewTime != nil {
 		renew = l.Spec.RenewTime.Time
 	}
+	// Carry a planned switchover quiesce request through to the marker so the active
+	// DC's coordinator can hold its primary read only while the target catches up.
+	quiesce := l.Annotations[leases.AnnQuiesce]
 	a.mu.Lock()
-	a.holders[l.Name] = markerState{dc: holder, renew: renew}
+	a.holders[l.Name] = markerState{dc: holder, renew: renew, quiesce: quiesce}
 	a.mu.Unlock()
 
 	// Once the target holds the Lease, the holder clears the handoff annotation
