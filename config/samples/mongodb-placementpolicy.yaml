@@ -1,7 +1,9 @@
-# MongoDB, two data Members plus a data-bearing Witness, group failover scope.
-# A MongoDB witness must carry data to satisfy w:"majority" writes, yet must never
-# be elected primary, so its role is Witness (not Arbiter). It follows its own
-# primary-dc-orders Lease, independent of other groups.
+# MongoDB, two data Members plus a vote-only Arbiter third site, group failover scope.
+# The Arbiter DC holds the dr-controlplane etcd member plus a data-less MongoDB arbiter
+# that the operator places onto that spoke: it votes (so the replica set keeps an odd,
+# partition-safe member count) but carries no data and is never elected primary. It is
+# not a data-bearing member. It follows its own primary-dc-orders Lease, independent of
+# other groups.
 apiVersion: apps.k8s.appscode.com/v1
 kind: PlacementPolicy
 metadata:
@@ -24,5 +26,5 @@ spec:
         replicaIndices: [2, 3]
         role: Member
       - clusterName: dc-c
-        replicaIndices: [4]
-        role: Witness
+        replicaIndices: []
+        role: Arbiter

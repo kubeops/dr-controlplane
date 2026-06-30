@@ -44,10 +44,6 @@ func arbiter(c string) appsv1.DistributionRule {
 	return appsv1.DistributionRule{ClusterName: c, Role: appsv1.DCRoleArbiter}
 }
 
-func witness(c string) appsv1.DistributionRule {
-	return appsv1.DistributionRule{ClusterName: c, ReplicaIndices: []int32{0}, Role: appsv1.DCRoleWitness}
-}
-
 func TestDeriveTwoDCWithArbiter(t *testing.T) {
 	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC, Trigger: appsv1.FailoverTrigger{Scope: appsv1.FailoverScopeGlobal}}
 	topo, errs := Derive([]*appsv1.PlacementPolicy{pp("pg", fp, member("dc-a"), member("dc-b"), arbiter("dc-c"))})
@@ -69,10 +65,10 @@ func TestDeriveTwoDCWithArbiter(t *testing.T) {
 	}
 }
 
-func TestDeriveGroupWitness(t *testing.T) {
-	// MongoDB style: two data Members plus a data bearing Witness, group scoped.
+func TestDeriveGroupArbiter(t *testing.T) {
+	// Group scoped: two data Members plus a vote-only Arbiter third site.
 	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC, Trigger: appsv1.FailoverTrigger{Scope: appsv1.FailoverScopeGroup, Group: "orders"}}
-	topo, errs := Derive([]*appsv1.PlacementPolicy{pp("mongo", fp, member("dc-a"), member("dc-b"), witness("dc-c"))})
+	topo, errs := Derive([]*appsv1.PlacementPolicy{pp("mongo", fp, member("dc-a"), member("dc-b"), arbiter("dc-c"))})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -80,8 +76,8 @@ func TestDeriveGroupWitness(t *testing.T) {
 	if st == nil {
 		t.Fatalf("expected group scope keyed primary-dc-orders, got %v", topo.Scopes)
 	}
-	if strings.Join(st.Witnesses, ",") != "dc-c" {
-		t.Fatalf("witnesses = %v, want [dc-c]", st.Witnesses)
+	if strings.Join(st.Arbiters, ",") != "dc-c" {
+		t.Fatalf("arbiters = %v, want [dc-c]", st.Arbiters)
 	}
 	if len(st.Members) != 2 {
 		t.Fatalf("members = %v, want 2", st.Members)

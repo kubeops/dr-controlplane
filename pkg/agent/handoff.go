@@ -33,7 +33,7 @@ import (
 // coordinated handoff. handoffTargetIsMember reports whether handoffTo names a
 // Member data center (one that can actually become primary).
 //
-//   - Arbiter and Witness DCs (not members) never contend.
+//   - Arbiter DCs (not members) never contend.
 //   - Normally a Member contends.
 //   - During a handoff to another Member, a Member pauses so the target can
 //     acquire. If this DC currently holds the Lease, pausing releases it

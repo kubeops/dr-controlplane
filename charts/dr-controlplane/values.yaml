@@ -60,7 +60,7 @@ controlplane:
 
 # ----------------------------------------------------------------------------
 # agent: one per data center. Renews the DC health Lease and, for Member scopes,
-# contends for the primary DC Lease. Arbiter and Witness DCs never contend.
+# contends for the primary DC Lease. Arbiter DCs never contend.
 # ----------------------------------------------------------------------------
 agent:
   enabled: true

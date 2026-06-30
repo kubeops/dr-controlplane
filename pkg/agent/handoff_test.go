@@ -28,7 +28,7 @@ func TestDesiredContend(t *testing.T) {
 		targetIsMember bool
 		want           bool
 	}{
-		{"arbiter or witness never contends", false, "", "dc-a", "dc-c", false, false},
+		{"arbiter never contends", false, "", "dc-a", "dc-c", false, false},
 		{"member contends normally", true, "", "dc-a", "dc-b", false, true},
 		{"member is the handoff target, contends eagerly", true, "dc-b", "dc-a", "dc-b", true, true},
 		{"non-holder member pauses during handoff to another member", true, "dc-a", "dc-b", "dc-c", true, false},

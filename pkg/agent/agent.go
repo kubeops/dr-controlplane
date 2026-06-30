@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package agent is the per data center DC agent. One runs in each data center.
 // It renews the DC's health Lease, and for the scopes where its DC is a Member it
-// contends for the primary DC Lease. Arbiter and Witness DCs never contend.
+// contends for the primary DC Lease. Arbiter DCs never contend.
 package agent
 
 import (

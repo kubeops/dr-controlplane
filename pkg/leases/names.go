@@ -42,7 +42,7 @@ const (
 const (
 	// AnnMemberDCs lists the Member (primary eligible) data centers for a primary
 	// DC Lease, comma separated. The topology controller sets it; agents read it to
-	// decide whether their DC contends. Arbiter and Witness DCs are not listed.
+	// decide whether their DC contends. Arbiter DCs are not listed.
 	AnnMemberDCs = "dr.open-cluster-management.io/member-dcs"
 
 	// AnnHandoffTo names the data center a coordinated failback should move the

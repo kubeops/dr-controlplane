@@ -17,7 +17,7 @@ limitations under the License.
 // Package topology derives the DC failover topology from the workloads'
 // PlacementPolicy objects: for each trigger scope (the global one plus each named
 // group) it computes which data centers are Members (primary DC Lease candidates)
-// and which are Arbiters or Witnesses.
+// and which are Arbiters.
 package topology
 
 import (
@@ -31,17 +31,15 @@ import (
 
 // ScopeTopology is the resolved set of data centers for one trigger scope.
 type ScopeTopology struct {
-	Scope     leases.Scope
-	Members   []string // primary eligible, the Lease candidates
-	Arbiters  []string // vote only, no data, never primary
-	Witnesses []string // data bearing, never primary
+	Scope    leases.Scope
+	Members  []string // primary eligible, the Lease candidates
+	Arbiters []string // vote only, no data, never primary
 }
 
 // AllClusters returns every data center participating in the scope.
 func (st *ScopeTopology) AllClusters() []string {
 	out := append([]string{}, st.Members...)
 	out = append(out, st.Arbiters...)
-	out = append(out, st.Witnesses...)
 	return out
 }
 
@@ -102,8 +100,6 @@ func (t *Topology) add(pp *appsv1.PlacementPolicy) error {
 		switch r.Role {
 		case appsv1.DCRoleArbiter:
 			st.Arbiters = appendUnique(st.Arbiters, r.ClusterName)
-		case appsv1.DCRoleWitness:
-			st.Witnesses = appendUnique(st.Witnesses, r.ClusterName)
 		default: // "" or Member
 			st.Members = appendUnique(st.Members, r.ClusterName)
 		}
@@ -124,7 +120,6 @@ func Derive(pps []*appsv1.PlacementPolicy) (*Topology, []error) {
 	for _, st := range t.Scopes {
 		sort.Strings(st.Members)
 		sort.Strings(st.Arbiters)
-		sort.Strings(st.Witnesses)
 	}
 	return t, errs
 }
