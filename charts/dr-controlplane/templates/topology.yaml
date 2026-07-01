@@ -93,7 +93,7 @@ spec:
         - name: topology
           image: {{ include "dr.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["dr-controlplane"]
+          command: ["/dr-controlplane"]
           args:
             - controller
             - --namespace={{ $ns }}

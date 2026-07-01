@@ -22,6 +22,11 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # The agent projects the active-DC marker ConfigMap onto its local spoke, which
+  # the engine coordinator reads and fails closed on. This is a local-cluster grant.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -71,7 +76,7 @@ spec:
         - name: agent
           image: {{ include "dr.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["dr-controlplane"]
+          command: ["/dr-controlplane"]
           args:
             - agent
             - --dc-name={{ $dc }}
