@@ -22,9 +22,10 @@ The service runs a three data center etcd quorum and publishes one answer: which
 | Handoff target annotation | `dr.open-cluster-management.io/handoff-to` (switchover) |
 | Scope annotation | `dr.open-cluster-management.io/scope` |
 | Quiesce annotation | `dr.open-cluster-management.io/quiesce` (planned zero-RPO handoff) |
-| Managed-by label | `app.kubernetes.io/managed-by=dr-controlplane` |
+| Managed-by label | `app.kubernetes.io/managed-by=dr-controlplane` (Leases), `dr-controlplane-agent` (spoke markers) |
+| Active DC marker (per spoke) | ConfigMap `primary-dc` / `primary-dc-<group>` in the marker namespace (`dc-failover` by default), keys `activeDC` / `renewTime` / `quiesce` |
 | Components | etcd (3 members) + control plane apiserver (replicas) + one topology `controller` + one `agent` per DC |
-| Roles | `Member` (data, primary-eligible), `Arbiter` (votes, no data, never primary), `Witness` (data, never primary) |
+| Roles | `Member` (data, primary-eligible), `Arbiter` (votes, no data, never primary). No Witness role. |
 
 ```
 dr-controlplane status                        # scopes, Members, current primary, per DC health
@@ -54,6 +55,14 @@ for dc in dc-a dc-b dc-c; do
 done
 ```
 
+On each spoke (the DC's own workload cluster) the agent projects the active DC marker that the consumer fence reads locally. Check it there:
+
+```
+kubectl -n dc-failover get configmap primary-dc -o yaml   # data.activeDC, data.renewTime, data.quiesce
+```
+
+A healthy marker names the current primary in `activeDC` and has a `renewTime` that keeps advancing (within the marker refresh interval, 5s by default). A frozen `renewTime` is what trips the consumer fence read only. `quiesce` is empty except during a planned switchover.
+
 An etcd cross check (run against any reachable member):
 
 ```
@@ -69,10 +78,11 @@ etcdctl --endpoints=<a,b,c> endpoint status -w table   # which member is leader,
 - **`primary-dc` has no holder or an expired renewTime and no candidate acquires**: either no Member is healthy, or the quorum is lost (two members down). Follow "Quorum lost".
 - **`handoff-to` annotation present for longer than a minute**: a handoff is stuck (the target is unhealthy or was removed from the member set). Follow "Handoff stuck".
 - **Consumer reports Degraded after a failover**: expected and safe. The consumer's own lag guard is refusing to promote diverged data. This is not a control plane fault; triage in the consumer (the KubeDB DR driver's per-engine spec).
+- **A spoke's active DC marker `renewTime` is frozen while the Lease looks fine**: the agent in that DC cannot reach the coordination plane, or its projector is wedged, so it stopped restamping the marker. The local consumer fence trips that DC read only at the fence TTL. Follow "The active DC marker is stale".
 
 ## Incident procedures
 
-### A single Member, or the Arbiter or Witness, is lost
+### A single Member, or the Arbiter, is lost
 
 Two of three etcd members remain, so there is still a majority. The service stays up and this loss alone triggers no failover. The system is now Degraded: a second loss would freeze the decision.
 
@@ -132,6 +142,15 @@ That DC's `dc-health-<dc>` goes stale and, if it was contending, it stops. If it
 1. Check the agent pod: `kubectl -n <agent-ns> logs deploy/dr-agent-<dc>` (or the agent pod name from your chart release).
 2. Restart it. On restart it resumes renewing health and, if it is a Member, rejoins contention (the former primary re-contends rather than idling).
 
+### The active DC marker is stale (a DC is fenced read only)
+
+Each agent projects a marker ConfigMap onto its local spoke (named after the scope's primary Lease, in the marker namespace) with `activeDC`, `renewTime`, and `quiesce`. Consumers read it locally and fail closed: if the `renewTime` stops advancing past the consumer's fence TTL, the local primary demotes itself. An agent can renew its health Lease yet still fail to write its marker (a bad `--spoke-kubeconfig` or `--marker-namespace`, or an unreachable spoke apiserver), so a DC can be elected active while its consumers stay fenced read only.
+
+1. Read the marker on the affected spoke: `kubectl -n <marker-ns> get configmap <primary-lease-name> -o yaml`. A missing ConfigMap, or a `renewTime` that is not advancing, is the problem.
+2. Check the agent's projector logs: `active DC marker projector` (logged when the spoke client becomes ready) and `failed to project active DC marker` or `active DC marker projection waiting` (the spoke client cannot be built). The spoke client is retried every tick, so a transient failure self heals; a persistent one is a misconfig.
+3. Confirm the projector flags: `--spoke-kubeconfig` (empty means in cluster, correct when the agent runs in its own DC), `--marker-namespace` (must match where the consumer fence reads), `--marker-refresh-interval` (must be well under the consumer fence TTL).
+4. Once the marker refreshes, the consumer fence clears on its own; no Lease action is needed.
+
 ### The topology controller is down
 
 The single `controller` reconciles the `member-dcs` annotation from PlacementPolicies. While it is down, agents and consumers keep working off the last-written member set; only changes to PlacementPolicy roles or new scopes are not reconciled.
@@ -154,7 +173,7 @@ dr-controlplane switchover --group orders --to dc-b
 The current holder releases, non target Members pause, and the target (which must be a Member) acquires without a race. Then the annotation clears and normal contention resumes.
 
 1. Preconditions: the target is a Member and its `dc-health-<dc>` is fresh; the consumer reports the target is caught up (low lag). The control plane does not know lag; confirm it in the consumer before switching.
-2. For a near-zero-RPO handoff, the consumer's hub orchestrator quiesces writes on the active DC first. The primary DC Lease carries the `dr.open-cluster-management.io/quiesce` annotation for that purpose; the consumer reads it to hold its primary read-only until the target has caught up, then the handoff completes. The control plane only carries the signal; the quiesce and catch-up logic live in the engine-aware consumer.
+2. For a near-zero-RPO handoff, the consumer's hub orchestrator quiesces writes on the active DC first. The primary DC Lease carries the `dr.open-cluster-management.io/quiesce` annotation naming the current holder; each agent projects it onto its spoke as the marker's `data.quiesce`, and the active DC's consumer reads that to hold its primary read-only until the target has caught up, then the handoff completes. The control plane only carries the signal; the quiesce and catch-up logic live in the engine-aware consumer.
 3. Verify: `dr-controlplane status` shows the new holder and no `handoff-to`.
 
 ### Add or remove a data center
@@ -184,7 +203,8 @@ The agents, the controller, and the consumers all authenticate to the control pl
 
 - **Who is primary, per scope**: `dr-controlplane status`, or `kubectl -n dc-failover get lease -l app.kubernetes.io/managed-by=dr-controlplane -o custom-columns=NAME:.metadata.name,HOLDER:.spec.holderIdentity,RENEW:.spec.renewTime`.
 - **Why did it fail over**: the primary's `dc-health-<dc>` went stale just before the holder changed points at that DC losing the majority (partition or double component loss); the agent logs in that DC show the election loss.
-- **Elections flapping / frequent unexpected failovers**: the election durations are too close to the inter DC RTT. `LeaseDuration`, `RenewDeadline`, and `RetryPeriod` must sit comfortably above the round trip time. Raise them; every renewal is a cross DC etcd write.
+- **Elections flapping / frequent unexpected failovers**: the election durations are too close to the inter DC RTT. `LeaseDuration`, `RenewDeadline`, and `RetryPeriod` must sit comfortably above the round trip time. Raise them; every renewal is a cross DC etcd write. When you raise them, keep the consumer fence TTL strictly inside `LeaseDuration` (see the guardrail below); the defaults are fence TTL 30s, `LeaseDuration` 45s.
+- **A consumer is stuck read only in the active DC**: read that spoke's marker ConfigMap; a frozen or missing `renewTime` means the agent's projector is not writing it. See "The active DC marker is stale".
 - **etcd slow / high latency**: `etcdctl endpoint status -w table` for DB size and raft term churn; WAN-tune heartbeat and election timeouts above the inter DC RTT.
 - **A Lease looks wrong**: check the `managed-by` label and the `scope` annotation to confirm it is one the controller owns, then compare `member-dcs` against the PlacementPolicy roles.
 
@@ -194,6 +214,7 @@ The agents, the controller, and the consumers all authenticate to the control pl
 - Never remove or add etcd members to escape a quorum-lost freeze except as the documented last-resort disaster recovery, with data loss accepted and signed off. The freeze is the safe behavior.
 - Never assume a failover means data is safe in the new primary. DC ownership is not data currency. The consumer's lag guard, not this service, decides whether promotion is safe.
 - Keep the three-member etcd topology and the WAN-tuned election durations. Both are load-bearing for the failure model.
+- Keep the consumer fence TTL plus cross DC clock skew strictly less than `LeaseDuration`. The marker `renewTime` tracks the primary Lease renewTime, so a partitioned active DC self fences at the fence TTL while a survivor acquires the Lease at `LeaseDuration`; invert that relation and a survivor can go writable before the old active DC fences, a split brain window. The defaults hold it with margin (30s < 45s); retune both sides together.
 
 ## Escalation
 

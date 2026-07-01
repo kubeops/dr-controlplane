@@ -15,7 +15,7 @@ What you need to know to work on this repo. For the big picture read `DESIGN.md`
 cmd/dr-controlplane        main.go + version.go: entrypoint and ldflag version vars
 pkg/cmds                   cobra root + subcommands (agent, controller, status, switchover)
 pkg/leases                 lease naming + annotation contract, the Scope type
-pkg/agent                  health lease, leader election, coordinated handoff, metrics
+pkg/agent                  health lease, leader election, coordinated handoff, active DC marker projector, metrics
 pkg/topology               derive topology from PlacementPolicy, ensure the Leases
 pkg/client                 consumer library (read the failover signal)
 charts/dr-controlplane     Helm chart (etcd, control plane, agent, controller)
@@ -67,7 +67,8 @@ Subcommands live in `pkg/cmds`, one file each, each exposing a `newCmdXxx() *cob
 
 ## Where the logic lives
 
-- The leader election, the start/pause of contention, and the handoff decision are in `pkg/agent` (`election.go`, `handoff.go`, `agent.go`). The single most important function is `desiredContend`; it encodes the Member/Arbiter/Witness invariant and the coordinated handoff. It is pure and unit tested, so change it there and extend `handoff_test.go`.
+- The leader election, the start/pause of contention, and the handoff decision are in `pkg/agent` (`election.go`, `handoff.go`, `agent.go`). The single most important function is `desiredContend`; it encodes the Member/Arbiter invariant and the coordinated handoff. It is pure and unit tested, so change it there and extend `handoff_test.go`.
+- The active DC marker projection is in `pkg/agent/projector.go`: it writes the `activeDC`/`renewTime`/`quiesce` ConfigMap onto the local spoke, with flags in `options.go` (`--spoke-kubeconfig`, `--marker-namespace`, `--marker-refresh-interval`). The marker `renewTime` tracks the primary Lease renewTime so a consumer fence fails closed; keep the consumer fence TTL strictly inside `LeaseDuration`.
 - The mapping from PlacementPolicy to scopes and member sets is in `pkg/topology/topology.go` (pure, tested) and the informer plumbing is in `controller.go`.
 - The Lease names and annotations every component agrees on are in `pkg/leases`. Treat them as a wire protocol: the controller writes them, the agents and the client library read them, so a rename is a breaking change across all three.
 
@@ -76,7 +77,7 @@ Subcommands live in `pkg/cmds`, one file each, each exposing a `newCmdXxx() *cob
 - Logging is `k8s.io/klog/v2` everywhere (`klog.InfoS`, `klog.ErrorS`). Do not introduce another logger.
 - The control plane apiserver is configured, never forked. Behavior changes to the control plane go in the chart (`ocmconfig.yaml`), not in Go.
 - Keep the service engine agnostic. The Lease is a DC ownership signal; promotion and lag checks belong to the consumer, not here.
-- `Arbiter` and `Witness` data centers must never hold a primary Lease. Any new contention path has to preserve that.
+- `Arbiter` data centers must never hold a primary Lease (there is no Witness role). Any new contention path has to preserve that.
 - Keep `Dockerfile.in`, `Dockerfile.dbg`, and `Dockerfile.ubi` in sync.
 - No em-dashes anywhere (commas, periods, colons, parentheses).
 

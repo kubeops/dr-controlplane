@@ -39,12 +39,16 @@ its own Degraded state if its data in the new primary DC is not safely promotabl
 Set per data center on the workload's PlacementPolicy:
 
 - `Member`: data bearing and primary eligible, a candidate for the primary DC Lease.
-- `Arbiter`: votes in etcd, holds no data, never primary.
-- `Witness`: data bearing but never primary (for engines like MongoDB whose witness
-  must carry data to satisfy majority writes, yet must not be elected).
+- `Arbiter`: votes in etcd, holds no data, never primary. The database operator may
+  co-locate a data-less engine voter there (for example a MongoDB arbiter, or a
+  ClickHouse Keeper voter) so the engine keeps an odd, partition-safe voter count
+  without a third data copy; it still holds no data and is never elected.
+
+There is no Witness role: a third data center is either a data-less `Arbiter` or a
+full `Member`.
 
 Two modes, same etcd topology (three voting members): TwoDC (two Members plus one
-Arbiter or Witness) and ThreeDC (three Members, any can be primary).
+Arbiter) and ThreeDC (three Members, any can be primary).
 
 ## Install
 
@@ -100,7 +104,7 @@ clusterSpreadConstraint:
 ```
 
 The controller turns this into the matching primary DC Lease. See
-`config/samples` for Postgres (Arbiter) and MongoDB (Witness) examples.
+`config/samples` for Postgres and MongoDB examples, each a two Member plus Arbiter layout.
 
 ## Operate
 
@@ -132,6 +136,16 @@ if c.IsLocalDCPrimary(leases.GlobalScope) {
     // run the workload's primary here
 }
 ```
+
+## Active DC marker on each spoke
+
+For a consumer that fences writes locally without a cross data center read, each agent
+also projects the signal into its own data center as a ConfigMap named after the scope's
+primary Lease (for example `primary-dc`), in the marker namespace (`dc-failover` by
+default), with `activeDC`, `renewTime`, and `quiesce` keys. The `renewTime` tracks the
+Lease renewTime, so if the agent is cut off from the control plane the marker goes stale
+and the local fence fails closed. See `DESIGN.md` for the marker contract and the
+fence-TTL-inside-LeaseDuration invariant.
 
 ## Documentation
 

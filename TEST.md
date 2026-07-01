@@ -10,7 +10,7 @@ The pure logic is unit tested: the handoff decision, the topology derivation, an
 go test ./pkg/...                                              # all unit tests
 go test ./pkg/agent/... -run TestDesiredContend -v             # the handoff decision table
 go test ./pkg/topology/... -run TestDeriveTwoDCWithArbiter -v  # Member/Arbiter derivation
-go test ./pkg/topology/... -run TestDeriveGroupWitness -v      # MongoDB style data bearing Witness
+go test ./pkg/topology/... -run TestDeriveGroupArbiter -v      # group scope with a vote-only Arbiter
 go test ./pkg/leases/... -v                                    # lease names and member parsing
 ```
 
@@ -22,8 +22,8 @@ make test
 
 What the unit tests pin down:
 
-- `TestDesiredContend` proves Arbiter and Witness never contend, a Member contends normally, the handoff target contends eagerly, a non target Member pauses during a handoff, and contention resumes once the target holds the Lease.
-- `TestDeriveTwoDCWithArbiter` and `TestDeriveGroupWitness` prove a PlacementPolicy maps to the right scope (`primary-dc` or `primary-dc-<group>`) with the right Member, Arbiter, and Witness sets, and `TestValidateSpreadRejectsTwoRegions` proves the failure domain spread check.
+- `TestDesiredContend` proves an Arbiter never contends, a Member contends normally, the handoff target contends eagerly, a non target Member pauses during a handoff, and contention resumes once the target holds the Lease.
+- `TestDeriveTwoDCWithArbiter` and `TestDeriveGroupArbiter` prove a PlacementPolicy maps to the right scope (`primary-dc` or `primary-dc-<group>`) with the right Member and Arbiter sets, and `TestValidateSpreadRejectsTwoRegions` proves the failure domain spread check.
 
 ## Local end to end on one cluster
 
@@ -76,9 +76,9 @@ kubectl -n dc-failover get lease primary-dc -o jsonpath='{.spec.holderIdentity}{
 
 ### Feature: automatic failover on primary loss
 
-Stop the agent that currently holds the Lease (Ctrl-C). After `LeaseDuration` (default 15s) the other agent acquires it; `status` shows the new primary and the `election_transitions_total` counter increments.
+Stop the agent that currently holds the Lease (Ctrl-C). After `LeaseDuration` (default 45s) the other agent acquires it; `status` shows the new primary and the `election_transitions_total` counter increments.
 
-### Feature: Arbiter and Witness never primary
+### Feature: Arbiter never primary
 
 Start a third agent whose data center is not in the `member-dcs` annotation:
 
@@ -86,7 +86,7 @@ Start a third agent whose data center is not in the `member-dcs` annotation:
 ./bin/dr-controlplane agent --dc-name=dc-c --kubeconfig=$HOME/.kube/config --v=2
 ```
 
-It renews `dc-health-dc-c` but never holds `primary-dc`, no matter how many times you stop the others. This is the Arbiter and Witness behavior.
+It renews `dc-health-dc-c` but never holds `primary-dc`, no matter how many times you stop the others. This is the Arbiter behavior.
 
 ### Feature: coordinated failback handoff
 
@@ -107,6 +107,16 @@ kubectl -n dc-failover get lease dc-health-dc-a -o jsonpath='{.spec.renewTime}{"
 ```
 
 The `RENEWED` column in `dr-controlplane status` shows the age; a growing age is how observers detect a data center that has lost the etcd majority.
+
+### Feature: active DC marker projection
+
+Each agent mirrors its scope's primary DC into a marker ConfigMap on its local spoke, named after the primary Lease. Running the agent off cluster like this, add `--spoke-kubeconfig=$HOME/.kube/config` so the projector can reach the spoke (in cluster that is automatic). On the single cluster flow the spoke is the same cluster, so read the marker directly:
+
+```
+kubectl -n dc-failover get configmap primary-dc -o yaml   # see data.activeDC, data.renewTime, data.quiesce
+```
+
+You should see `activeDC` (the current primary), a `renewTime` that keeps advancing while the agent can reach the control plane, and an empty `quiesce`. Stop the holding agent and the `renewTime` stops advancing: that frozen timestamp is the fail closed signal a consumer fence trips on. During a `switchover`, `quiesce` briefly names the outgoing holder.
 
 ### Feature: topology controller from PlacementPolicies
 

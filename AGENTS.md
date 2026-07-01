@@ -11,7 +11,7 @@ The split brain guarantee is the etcd majority: moving a Lease is an etcd write 
 ## The binary, one command with subcommands
 
 ```
-dr-controlplane agent       per data center DC agent (one per DC): renews the DC health Lease, contends for the primary DC Lease for Member scopes, runs the coordinated failback handoff
+dr-controlplane agent       per data center DC agent (one per DC): renews the DC health Lease, contends for the primary DC Lease for Member scopes, runs the coordinated failback handoff, projects the active DC marker onto the local spoke
 dr-controlplane controller  topology controller (one): reads PlacementPolicies, ensures one primary DC Lease per scope
 dr-controlplane status      CLI: scopes, members, current primary, per DC health
 dr-controlplane switchover  CLI: request a planned coordinated handoff
@@ -23,9 +23,9 @@ dr-controlplane version
 - `cmd/dr-controlplane/main.go` wires `pkg/cmds.NewRootCmd()`, initializes klog flags, runs with a signal context.
 - `cmd/dr-controlplane/version.go` holds the ldflag version variables (`gomodules.xyz/x/version`).
 - `pkg/cmds/` Cobra tree: `root.go`, `agent.go`, `controller.go`, `status.go`, `switchover.go`, `util.go` (kubeconfig and lease helpers).
-- `pkg/leases/` the naming and annotation contract shared by every component: `primary-dc`, `primary-dc-<group>`, `dc-health-<dc>`, the `member-dcs` and `handoff-to` annotations, the `Scope` type. Treat this as the wire protocol between the controller, the agents, and consumers.
-- `pkg/agent/` the DC agent: `health.go` (renew the DC health Lease), `election.go` (per scope `client-go` leader election, started or paused per desired state), `handoff.go` (the `desiredContend` decision and handoff annotation clearing), `agent.go` (informer driven orchestration), `metrics.go`, `options.go`.
-- `pkg/topology/` `topology.go` (pure derivation of Member/Arbiter/Witness sets from PlacementPolicies, unit tested) and `controller.go` (dynamic informer on PlacementPolicy, ensures the Leases).
+- `pkg/leases/` the naming and annotation contract shared by every component: `primary-dc`, `primary-dc-<group>`, `dc-health-<dc>`, the `member-dcs`, `handoff-to`, `quiesce`, and `scope` annotations, the `Scope` type. Treat this as the wire protocol between the controller, the agents, and consumers.
+- `pkg/agent/` the DC agent: `health.go` (renew the DC health Lease), `election.go` (per scope `client-go` leader election, started or paused per desired state), `handoff.go` (the `desiredContend` decision and handoff annotation clearing), `projector.go` (project the active DC marker onto the local spoke, fail closed on `renewTime`), `agent.go` (informer driven orchestration), `metrics.go`, `options.go`.
+- `pkg/topology/` `topology.go` (pure derivation of Member/Arbiter sets from PlacementPolicies, unit tested) and `controller.go` (dynamic informer on PlacementPolicy, ensures the Leases).
 - `pkg/client/` the consumer library: a Lease informer that exposes the current primary DC per scope and fires callbacks on change.
 - The PlacementPolicy extension (`FailoverPolicy`, `DistributionRule.Role`) lives in `kubeops.dev/petset/apis/apps/v1`, consumed here through a local replace; it is not defined in this repo.
 - `charts/dr-controlplane/` Helm chart: etcd quorum, the config only control plane (`controlplane server --controlplane-config-dir` with an external etcd `ocmconfig.yaml`), the agent (one install per DC), the controller.
@@ -58,8 +58,9 @@ go test ./pkg/topology/... -run TestDeriveTwoDCWithArbiter -v
 - The vendor directory is checked in; `verify-modules` fails if `go mod tidy && go mod vendor` is not clean.
 - `kubeops.dev/petset` is a local replace (`../../kubeops.dev/petset`), so keep the petset checkout beside this repo in the GOPATH layout. Editing the PlacementPolicy API means editing petset's `apis/apps/v1` and its `zz_generated.deepcopy.go`.
 - The control plane apiserver is **never forked**. It is configured through `ocmconfig.yaml` (external etcd mode) and run from its published image. Changes to the control plane belong in the chart, not in Go.
-- `Arbiter` and `Witness` data centers never hold the primary DC Lease. Only `Member` data centers contend. Enforce this anywhere contention is decided (`pkg/agent`).
+- `Arbiter` data centers never hold the primary DC Lease (there is no Witness role). Only `Member` data centers contend. Enforce this anywhere contention is decided (`pkg/agent`).
 - The primary DC Lease is a DC ownership signal, not a per database data currency signal. Consumers apply their own lag guard. Do not add promotion logic to this service.
+- The active DC marker each agent projects onto its spoke is fail closed: its `renewTime` tracks the primary Lease renewTime, and the consumer fence TTL must stay strictly inside `LeaseDuration` (default fence TTL 30s, `LeaseDuration` 45s), so the old active DC goes read only before any survivor becomes writable. Preserve that when tuning election durations.
 - The Lease names and annotations in `pkg/leases` are a cross component contract (controller writes, agents and consumers read). Changing them is a breaking change.
 - Three Dockerfiles, one binary: keep `Dockerfile.in`, `Dockerfile.dbg`, `Dockerfile.ubi` in sync.
 - No em-dashes in any file (commas, periods, colons, parentheses).

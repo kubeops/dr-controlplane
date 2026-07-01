@@ -37,6 +37,8 @@ Primary DC Lease, one per trigger scope:
 - `spec.holderIdentity` is the name of the current primary data center. A change in holder is a failover.
 - annotation `dr.open-cluster-management.io/member-dcs` lists the Member data centers (the candidates), set by the controller.
 - annotation `dr.open-cluster-management.io/handoff-to` names a target for a planned coordinated handoff.
+- annotation `dr.open-cluster-management.io/quiesce` names the data center whose primary must hold read only during a planned switchover, so the target can catch up for zero RPO.
+- annotation `dr.open-cluster-management.io/scope` records the trigger scope (Global or the group name) for observability.
 
 Health Lease, one per data center:
 
@@ -48,12 +50,13 @@ Health Lease, one per data center:
 Each data center has a role, set per data center on the workload's PlacementPolicy (`distributionRules[].role`):
 
 - `Member`: data bearing and primary eligible. A candidate for the primary DC Lease.
-- `Arbiter`: votes in etcd, holds no data, never primary. Its agent never contends.
-- `Witness`: data bearing but never primary. This exists for engines like MongoDB whose witness must carry data to satisfy `w:"majority"` writes, yet must never be elected. Its agent never contends.
+- `Arbiter`: votes in etcd, holds no data, never primary. Its agent never contends. The Arbiter data center holds the dr-controlplane etcd member and no database data. The database operator may co-locate a data-less engine voter there (for example a MongoDB arbiter, or a ClickHouse Keeper voter) so the engine keeps an odd, partition-safe voter count without shipping a third data copy; that voter still carries no data and is never elected primary.
+
+There is no Witness role. A third data center is either a data-less `Arbiter` or a full `Member`. The earlier data-bearing-but-never-primary Witness role was removed: a third site that holds data should just be a `Member`, and one that only breaks ties should hold no data at all.
 
 The etcd topology is always three voting members. The only difference between the modes is which data centers are candidates:
 
-- TwoDC: two Members plus one Arbiter or Witness. The two Members are the only Lease candidates.
+- TwoDC: two Members plus one Arbiter. The two Members are the only Lease candidates.
 - ThreeDC: three Members, any can be primary.
 
 ## Components
@@ -64,9 +67,9 @@ The four deployable pieces (the Helm chart installs each):
 
 2. Control plane. OCM control plane apiserver replicas in external etcd mode (`ocmconfig.yaml` with `etcd.mode: external`), serving the Lease API. Replicas are stateless; their state is the external etcd. Clients reach them through one stable endpoint (see Client endpoint below).
 
-3. DC agent (`pkg/agent`, the `agent` subcommand), one per data center. It always renews its health Lease. For each scope where its data center is a Member it runs a `client-go` leader election participant against the control plane; the winner's `holderIdentity` is that data center's name. Arbiter and Witness agents run only the health Lease.
+3. DC agent (`pkg/agent`, the `agent` subcommand), one per data center. It always renews its health Lease. For each scope where its data center is a Member it runs a `client-go` leader election participant against the control plane; the winner's `holderIdentity` is that data center's name. An Arbiter agent runs only the health Lease. The agent also projects the active DC marker (see below) into its local spoke cluster, so a consumer reads the failover signal locally and fail closed rather than reaching cross data center on every write.
 
-4. Topology controller (`pkg/topology`, the `controller` subcommand), one instance. It watches PlacementPolicy on the OCM hub through a dynamic informer, derives for each trigger scope the set of Member, Arbiter, and Witness data centers, and ensures a primary DC Lease exists per scope annotated with the member set. It never touches the Lease spec the agents manage (holder, renew time).
+4. Topology controller (`pkg/topology`, the `controller` subcommand), one instance. It watches PlacementPolicy on the OCM hub through a dynamic informer, derives for each trigger scope the set of Member and Arbiter data centers, and ensures a primary DC Lease exists per scope annotated with the member set. It never touches the Lease spec the agents manage (holder, renew time).
 
 Plus the consumer library (`pkg/client`), imported by applications that need the failover signal.
 
@@ -74,7 +77,7 @@ Plus the consumer library (`pkg/client`), imported by applications that need the
 
 The agent does not run one long lived election. It computes, per scope, whether its data center should be contending right now, and starts or stops a leader election participant to match. The decision (`desiredContend` in `pkg/agent/handoff.go`) is:
 
-- not a Member: never contend (Arbiter, Witness).
+- not a Member: never contend (an Arbiter).
 - a Member with no handoff in progress: contend.
 - a Member that is the handoff target: contend eagerly.
 - a Member during a handoff to another data center: pause, so the target can acquire. If this data center currently holds the Lease, pausing releases it (`ReleaseOnCancel`).
@@ -84,9 +87,25 @@ Because client-go's election returns after losing leadership, the participant is
 
 Every Lease renewal is an etcd write that commits on a majority, so it costs one inter data center round trip. The election durations (`LeaseDuration`, `RenewDeadline`, `RetryPeriod`) must sit comfortably above the inter DC RTT. They also set the failover signal's RTO floor: a dead primary's Lease is reclaimable only after `LeaseDuration`.
 
+## The active DC marker: a local, fail-closed signal
+
+A cross data center consumer should not reach back to the coordination plane on every write to ask which data center is primary. That read would be a WAN round trip on the hot path, and a consumer partitioned from the control plane would have no safe answer. So each agent projects the failover signal into its own data center as a marker ConfigMap the consumer reads locally.
+
+For every scope, the agent writes a ConfigMap named after that scope's primary Lease (for example `primary-dc`, or `primary-dc-<group>`) into the marker namespace on its local spoke cluster (`dc-failover` by default, set with `--marker-namespace`), labeled `app.kubernetes.io/managed-by=dr-controlplane-agent`, carrying:
+
+- `data.activeDC`: the data center the quorum currently trusts as primary (the Lease `holderIdentity`).
+- `data.renewTime`: RFC3339, the observed primary DC Lease `renewTime`.
+- `data.quiesce`: the data center asked to hold its primary read only for a planned switchover, empty in steady state.
+
+The marker is fail closed by construction. Its `renewTime` tracks the primary DC Lease `renewTime`, and the agent restamps it on a short interval (`--marker-refresh-interval`, 5s by default). If the agent is partitioned from the coordination plane it stops seeing Lease renewals, the marker `renewTime` freezes, and after the consumer's fence TTL the local primary demotes itself, with no cross data center call. Projection never blocks the agent: the spoke client is built lazily and retried on every tick, and a projection error is logged and retried rather than fatal, because an agent that renews its health Lease but silently fails to write its marker could be elected active while its consumers stay fenced read only.
+
+### The split-brain safety invariant
+
+The marker reduces the no-two-writable-primaries guarantee to one timing relation. A partitioned active DC self fences at `lastRenew + fenceTTL`. A survivor can only acquire the expired primary DC Lease at `lastRenew + LeaseDuration`. So the fence TTL plus cross data center clock skew must be strictly less than `LeaseDuration`, and then the old active DC always goes read only before any new DC can become writable. The defaults satisfy this with margin: the consumer fence TTL is 30s and `LeaseDuration` is 45s. This is why `LeaseDuration` is 45s rather than the bare RTT-driven minimum. If you retune the election durations, move both sides together and preserve `fenceTTL + skew < LeaseDuration`, or you reopen a split brain window.
+
 ## Coordinated failback handoff
 
-Plain leader election has no priority, so releasing a Lease to hand it back to a preferred data center is a race: any candidate can re-acquire, including the wrong one. The service instead does a coordinated handoff. `dr-controlplane switchover --to <dc>` (or the controller) sets `handoff-to: <dc>` on the Lease. Every agent reacts through `desiredContend`: the current holder releases and the other Members pause, so only the target is still contending and it acquires. Once the target holds the Lease, the holder clears the annotation and normal contention resumes. A handoff whose target is not a Member (a stale annotation, or a Member removed from the set mid handoff) is ignored, so a bad target can never leave the scope with no primary. The target only becomes primary after it is healthy, and the consumer still applies its own lag guard before accepting writes there.
+Plain leader election has no priority, so releasing a Lease to hand it back to a preferred data center is a race: any candidate can re-acquire, including the wrong one. The service instead does a coordinated handoff. `dr-controlplane switchover --to <dc>` (or the controller) sets `handoff-to: <dc>` on the Lease. Every agent reacts through `desiredContend`: the current holder releases and the other Members pause, so only the target is still contending and it acquires. Once the target holds the Lease, the holder clears the annotation and normal contention resumes. A handoff whose target is not a Member (a stale annotation, or a Member removed from the set mid handoff) is ignored, so a bad target can never leave the scope with no primary. The target only becomes primary after it is healthy, and the consumer still applies its own lag guard before accepting writes there. For a planned switchover that must not lose data, the hub also sets `quiesce: <current-holder>` on the Lease before the handoff. The agent carries that through the marker as `data.quiesce`, and the active DC's consumer holds its primary read only while the target replays up to the active primary's frozen position, reaching zero RPO. Once the Lease moves, the old DC self fences anyway and the request clears.
 
 ## DC ownership is not data currency
 
@@ -100,10 +119,9 @@ A workload's PlacementPolicy `failoverPolicy.trigger` selects which Lease it fol
 
 ## Failure model
 
-- One Member or the Arbiter or Witness is lost: the remaining two are still an etcd majority, the service stays up, and the loss alone triggers no failover. The system is Degraded until the member returns, because it can no longer tolerate a second loss.
+- One Member or the Arbiter is lost: the remaining two are still an etcd majority, the service stays up, and the loss alone triggers no failover. The system is Degraded until the member returns, because it can no longer tolerate a second loss.
 - The current primary data center is lost: it can no longer renew, the Lease expires after `LeaseDuration`, and another Member acquires it. That holder change is the failover signal.
-- A network partition: only the side with the etcd majority can renew the Lease. The minority side cannot, so it self fences. There is never a second primary.
-- A Witness only loss: the Witness never held the Lease, so nothing moves.
+- A network partition: only the side with the etcd majority can renew the Lease. The minority side cannot, so its marker `renewTime` freezes and its local primary self fences at the fence TTL, before the majority side acquires the Lease at `LeaseDuration`. There is never a second writable primary.
 - Two data centers lost at once: no etcd majority remains, so the Lease becomes unchangeable. The decision freezes rather than guessing. This is the correct safe behavior for a quorum system, and recovery requires restoring a quorum.
 
 ## Client endpoint
