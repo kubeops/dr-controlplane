@@ -48,12 +48,20 @@ controlplane:
   # external etcd, run as: <image> server --controlplane-config-dir=/controlplane_config.
   # Required when controlplane.enabled is true.
   image: ""
+  # Container command (entrypoint) for the control plane image. Defaults to the
+  # upstream OCM multicluster-controlplane binary path. Override only if your image
+  # names the binary differently.
+  command: []   # default: [/multicluster-controlplane]
   replicas: 2
   externalHostname: dc-failover.example.com
   port: 9443
   etcdPrefix: /registry
   # TLS material for talking to etcd, as a Secret with ca.crt, tls.crt, tls.key.
   etcdTLSSecret: ""
+  # Secret (in the release namespace) holding the CA the apiserver uses to sign its
+  # serving and client certs, with keys ca.crt and ca.key. Required off OpenShift:
+  # without it the control plane tries to reuse an OpenShift cluster CA and fails.
+  apiserverCASecret: ""
   service:
     # ClusterIP for in cluster, or LoadBalancer to expose the single front endpoint.
     type: ClusterIP

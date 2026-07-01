@@ -2,6 +2,47 @@
 {{- $ns := .Values.namespace -}}
 {{- $name := printf "%s-controlplane" (include "dr.fullname" .) -}}
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+rules:
+  # The control plane writes its generated client kubeconfigs into Secrets in its
+  # own namespace, and reads/updates ConfigMaps during bootstrap.
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $ns }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ $name }}
@@ -17,6 +58,10 @@ data:
     apiserver:
       externalHostname: {{ .Values.controlplane.externalHostname }}
       port: {{ .Values.controlplane.port }}
+      {{- if .Values.controlplane.apiserverCASecret }}
+      caFile: /controlplane_ca/ca.crt
+      caKeyFile: /controlplane_ca/ca.key
+      {{- end }}
     etcd:
       mode: external
       prefix: {{ .Values.controlplane.etcdPrefix }}
@@ -52,6 +97,7 @@ spec:
         {{- include "dr.labels" . | nindent 8 }}
         app.kubernetes.io/component: controlplane
     spec:
+      serviceAccountName: {{ $name }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -60,7 +106,7 @@ spec:
         - name: controlplane
           image: {{ required "controlplane.image is required when controlplane.enabled is true" .Values.controlplane.image }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["controlplane"]
+          command: {{ .Values.controlplane.command | default (list "/multicluster-controlplane") | toJson }}
           args:
             - server
             - --controlplane-config-dir=/controlplane_config
@@ -68,6 +114,8 @@ spec:
             - name: https
               containerPort: {{ .Values.controlplane.port }}
           volumeMounts:
+            - name: data
+              mountPath: /.ocm
             - name: config
               mountPath: /controlplane_config
               readOnly: true
@@ -76,7 +124,14 @@ spec:
               mountPath: /etc/etcd-tls
               readOnly: true
             {{- end }}
+            {{- if .Values.controlplane.apiserverCASecret }}
+            - name: apiserver-ca
+              mountPath: /controlplane_ca
+              readOnly: true
+            {{- end }}
       volumes:
+        - name: data
+          emptyDir: {}
         - name: config
           configMap:
             name: {{ $name }}
@@ -84,6 +139,11 @@ spec:
         - name: etcd-tls
           secret:
             secretName: {{ .Values.controlplane.etcdTLSSecret }}
+        {{- end }}
+        {{- if .Values.controlplane.apiserverCASecret }}
+        - name: apiserver-ca
+          secret:
+            secretName: {{ .Values.controlplane.apiserverCASecret }}
         {{- end }}
 ---
 apiVersion: v1
