@@ -62,6 +62,20 @@ controlplane:
   # serving and client certs, with keys ca.crt and ca.key. Required off OpenShift:
   # without it the control plane tries to reuse an OpenShift cluster CA and fails.
   apiserverCASecret: ""
+  # Persist the apiserver data directory (/.ocm), which holds the self minted
+  # server-ca, client-ca, request-header-ca, and every issued cert, on a small
+  # durable PVC. Without this the data dir is an emptyDir, so any pod restart mints
+  # a brand new CA that no existing client kubeconfig matches, and all cross DC TLS
+  # trust breaks until an operator manually redistributes the new CA. With the PVC
+  # the first boot generates the CAs into it and they persist thereafter, so a pod
+  # loss no longer changes the CA. Requires replicas 1 (the PVC is ReadWriteOnce and
+  # a single CA must be served); highly available multi replica CA sharing is a
+  # separate concern. Strongly recommended for any real deployment.
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClassName: ""     # "" uses the cluster default storage class
+    accessMode: ReadWriteOnce
   service:
     # ClusterIP for in cluster, or LoadBalancer to expose the single front endpoint.
     type: ClusterIP

@@ -85,6 +85,13 @@ metadata:
     app.kubernetes.io/component: controlplane
 spec:
   replicas: {{ .Values.controlplane.replicas }}
+  {{- if .Values.controlplane.persistence.enabled }}
+  # The data dir is on a ReadWriteOnce PVC, so the old pod must release the volume
+  # before the replacement attaches it. RollingUpdate would deadlock on the single
+  # attach PVC, so force Recreate. Keep controlplane.replicas at 1 when persisting.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "dr.name" . }}
@@ -131,7 +138,12 @@ spec:
             {{- end }}
       volumes:
         - name: data
+          {{- if .Values.controlplane.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         - name: config
           configMap:
             name: {{ $name }}
@@ -145,6 +157,30 @@ spec:
           secret:
             secretName: {{ .Values.controlplane.apiserverCASecret }}
         {{- end }}
+{{- if .Values.controlplane.persistence.enabled }}
+---
+# Durable home for the apiserver data dir (/.ocm) so the self minted server-ca,
+# client-ca, request-header-ca, and issued certs survive a pod restart. On first
+# boot the PVC is empty and the apiserver generates the CAs into it; every restart
+# after that reuses them, so a pod loss no longer breaks cross DC TLS trust.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+spec:
+  accessModes:
+    - {{ .Values.controlplane.persistence.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.controlplane.persistence.size | default "1Gi" }}
+  {{- if .Values.controlplane.persistence.storageClassName }}
+  storageClassName: {{ .Values.controlplane.persistence.storageClassName | quote }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
