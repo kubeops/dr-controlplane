@@ -12,7 +12,7 @@ require (
 	k8s.io/client-go v0.34.3
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
-	kubeops.dev/petset v0.0.0-00010101000000-000000000000
+	kubeops.dev/petset v0.1.1-0.20260709161836-19b3570c41ab
 )
 
 require (
@@ -94,9 +94,6 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-// The coordination service consumes the PlacementPolicy types from petset.
-replace kubeops.dev/petset => ../../kubeops.dev/petset
 
 // Match petset so the imported apis package resolves the same controller-runtime.
 replace sigs.k8s.io/controller-runtime => github.com/kmodules/controller-runtime v0.22.5-0.20251227114913-f011264689cd
