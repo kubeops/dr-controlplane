@@ -80,9 +80,6 @@ func (a *Agent) runProjector(ctx context.Context) {
 					continue
 				}
 				spoke = s
-				a.mu.Lock()
-				a.spoke = spoke
-				a.mu.Unlock()
 				klog.InfoS("active DC marker projector spoke client ready")
 			}
 			a.projectMarkers(ctx, spoke)

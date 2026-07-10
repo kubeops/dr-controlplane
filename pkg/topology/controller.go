@@ -81,7 +81,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	lister := gi.Lister()
 
 	trigger := make(chan struct{}, 1)
-	enqueue := func(interface{}) {
+	enqueue := func(any) {
 		select {
 		case trigger <- struct{}{}:
 		default:
@@ -89,7 +89,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    enqueue,
-		UpdateFunc: func(_, obj interface{}) { enqueue(obj) },
+		UpdateFunc: func(_, obj any) { enqueue(obj) },
 		DeleteFunc: enqueue,
 	})
 

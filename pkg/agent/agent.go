@@ -37,7 +37,6 @@ import (
 type Agent struct {
 	opts    Options
 	cs      kubernetes.Interface
-	spoke   kubernetes.Interface
 	metrics *Metrics
 
 	rootCtx context.Context
@@ -77,9 +76,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactoryWithOptions(a.cs, 10*time.Minute, informers.WithNamespace(a.opts.Namespace))
 	informer := factory.Coordination().V1().Leases().Informer()
 	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { a.onLease(obj) },
-		UpdateFunc: func(_, obj interface{}) { a.onLease(obj) },
-		DeleteFunc: func(obj interface{}) { a.onDelete(obj) },
+		AddFunc:    func(obj any) { a.onLease(obj) },
+		UpdateFunc: func(_, obj any) { a.onLease(obj) },
+		DeleteFunc: func(obj any) { a.onDelete(obj) },
 	})
 
 	factory.Start(ctx.Done())
@@ -93,7 +92,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (a *Agent) onLease(obj interface{}) {
+func (a *Agent) onLease(obj any) {
 	l, ok := obj.(*coordinationv1.Lease)
 	if !ok || !leases.IsPrimaryLeaseName(l.Name) {
 		return
@@ -101,7 +100,7 @@ func (a *Agent) onLease(obj interface{}) {
 	a.reconcile(l)
 }
 
-func (a *Agent) onDelete(obj interface{}) {
+func (a *Agent) onDelete(obj any) {
 	l, ok := obj.(*coordinationv1.Lease)
 	if !ok {
 		tomb, ok := obj.(cache.DeletedFinalStateUnknown)
