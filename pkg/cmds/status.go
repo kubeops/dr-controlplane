@@ -50,27 +50,27 @@ func newCmdStatus() *cobra.Command {
 			sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(w, "SCOPE\tLEASE\tMEMBERS\tPRIMARY\tHANDOFF\tRENEWED")
+			_, _ = fmt.Fprintln(w, "SCOPE\tLEASE\tMEMBERS\tPRIMARY\tHANDOFF\tRENEWED")
 			for i := range items {
 				l := &items[i]
 				if !leases.IsPrimaryLeaseName(l.Name) {
 					continue
 				}
 				scope, _ := leases.ScopeFromPrimaryLeaseName(l.Name)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s ago\n",
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s ago\n",
 					scope.String(), l.Name,
 					orDash(l.Annotations[leases.AnnMemberDCs]),
 					leaseHolder(l),
 					orDash(l.Annotations[leases.AnnHandoffTo]),
 					leaseAge(l))
 			}
-			fmt.Fprintln(w, "\tDC HEALTH\t\t\t\t")
+			_, _ = fmt.Fprintln(w, "\tDC HEALTH\t\t\t\t")
 			for i := range items {
 				l := &items[i]
 				if leases.IsPrimaryLeaseName(l.Name) {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t\t%s\t\t%s ago\n", "health", l.Name, leaseHolder(l), leaseAge(l))
+				_, _ = fmt.Fprintf(w, "%s\t%s\t\t%s\t\t%s ago\n", "health", l.Name, leaseHolder(l), leaseAge(l))
 			}
 			return w.Flush()
 		},

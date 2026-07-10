@@ -741,7 +741,7 @@ kmodules.xyz/custom-resources/crds
 # kmodules.xyz/monitoring-agent-api v0.34.1
 ## explicit; go 1.24.0
 kmodules.xyz/monitoring-agent-api/api/v1
-# kubeops.dev/petset v0.0.0-00010101000000-000000000000 => ../../kubeops.dev/petset
+# kubeops.dev/petset v0.1.1-0.20260709161836-19b3570c41ab
 ## explicit; go 1.24.0
 kubeops.dev/petset/apis/apps/v1
 kubeops.dev/petset/crds
@@ -809,5 +809,4 @@ sigs.k8s.io/structured-merge-diff/v6/value
 # sigs.k8s.io/yaml v1.6.0
 ## explicit; go 1.22
 sigs.k8s.io/yaml
-# kubeops.dev/petset => ../../kubeops.dev/petset
 # sigs.k8s.io/controller-runtime => github.com/kmodules/controller-runtime v0.22.5-0.20251227114913-f011264689cd

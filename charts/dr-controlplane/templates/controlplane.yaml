@@ -2,6 +2,47 @@
 {{- $ns := .Values.namespace -}}
 {{- $name := printf "%s-controlplane" (include "dr.fullname" .) -}}
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+rules:
+  # The control plane writes its generated client kubeconfigs into Secrets in its
+  # own namespace, and reads/updates ConfigMaps during bootstrap.
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $ns }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ $name }}
@@ -17,6 +58,10 @@ data:
     apiserver:
       externalHostname: {{ .Values.controlplane.externalHostname }}
       port: {{ .Values.controlplane.port }}
+      {{- if .Values.controlplane.apiserverCASecret }}
+      caFile: /controlplane_ca/ca.crt
+      caKeyFile: /controlplane_ca/ca.key
+      {{- end }}
     etcd:
       mode: external
       prefix: {{ .Values.controlplane.etcdPrefix }}
@@ -40,6 +85,13 @@ metadata:
     app.kubernetes.io/component: controlplane
 spec:
   replicas: {{ .Values.controlplane.replicas }}
+  {{- if .Values.controlplane.persistence.enabled }}
+  # The data dir is on a ReadWriteOnce PVC, so the old pod must release the volume
+  # before the replacement attaches it. RollingUpdate would deadlock on the single
+  # attach PVC, so force Recreate. Keep controlplane.replicas at 1 when persisting.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "dr.name" . }}
@@ -52,6 +104,7 @@ spec:
         {{- include "dr.labels" . | nindent 8 }}
         app.kubernetes.io/component: controlplane
     spec:
+      serviceAccountName: {{ $name }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -60,7 +113,7 @@ spec:
         - name: controlplane
           image: {{ required "controlplane.image is required when controlplane.enabled is true" .Values.controlplane.image }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["controlplane"]
+          command: {{ .Values.controlplane.command | default (list "/multicluster-controlplane") | toJson }}
           args:
             - server
             - --controlplane-config-dir=/controlplane_config
@@ -68,6 +121,8 @@ spec:
             - name: https
               containerPort: {{ .Values.controlplane.port }}
           volumeMounts:
+            - name: data
+              mountPath: /.ocm
             - name: config
               mountPath: /controlplane_config
               readOnly: true
@@ -76,7 +131,19 @@ spec:
               mountPath: /etc/etcd-tls
               readOnly: true
             {{- end }}
+            {{- if .Values.controlplane.apiserverCASecret }}
+            - name: apiserver-ca
+              mountPath: /controlplane_ca
+              readOnly: true
+            {{- end }}
       volumes:
+        - name: data
+          {{- if .Values.controlplane.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         - name: config
           configMap:
             name: {{ $name }}
@@ -85,6 +152,35 @@ spec:
           secret:
             secretName: {{ .Values.controlplane.etcdTLSSecret }}
         {{- end }}
+        {{- if .Values.controlplane.apiserverCASecret }}
+        - name: apiserver-ca
+          secret:
+            secretName: {{ .Values.controlplane.apiserverCASecret }}
+        {{- end }}
+{{- if .Values.controlplane.persistence.enabled }}
+---
+# Durable home for the apiserver data dir (/.ocm) so the self minted server-ca,
+# client-ca, request-header-ca, and issued certs survive a pod restart. On first
+# boot the PVC is empty and the apiserver generates the CAs into it; every restart
+# after that reuses them, so a pod loss no longer breaks cross DC TLS trust.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controlplane
+spec:
+  accessModes:
+    - {{ .Values.controlplane.persistence.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.controlplane.persistence.size | default "1Gi" }}
+  {{- if .Values.controlplane.persistence.storageClassName }}
+  storageClassName: {{ .Values.controlplane.persistence.storageClassName | quote }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

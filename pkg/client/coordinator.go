@@ -69,9 +69,9 @@ func New(cs kubernetes.Interface, namespace, localDC string) *Coordinator {
 		subs:     map[string][]ChangeFunc{},
 	}
 	_, _ = c.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { c.onLease(obj) },
-		UpdateFunc: func(_, obj interface{}) { c.onLease(obj) },
-		DeleteFunc: func(obj interface{}) { c.onDelete(obj) },
+		AddFunc:    func(obj any) { c.onLease(obj) },
+		UpdateFunc: func(_, obj any) { c.onLease(obj) },
+		DeleteFunc: func(obj any) { c.onDelete(obj) },
 	})
 	return c
 }
@@ -120,7 +120,7 @@ func holderOf(l *coordinationv1.Lease) string {
 	return *l.Spec.HolderIdentity
 }
 
-func (c *Coordinator) onLease(obj interface{}) {
+func (c *Coordinator) onLease(obj any) {
 	l, ok := obj.(*coordinationv1.Lease)
 	if !ok || !leases.IsPrimaryLeaseName(l.Name) {
 		return
@@ -128,7 +128,7 @@ func (c *Coordinator) onLease(obj interface{}) {
 	c.apply(l.Name, holderOf(l))
 }
 
-func (c *Coordinator) onDelete(obj interface{}) {
+func (c *Coordinator) onDelete(obj any) {
 	l, ok := obj.(*coordinationv1.Lease)
 	if !ok {
 		if tomb, ok := obj.(cache.DeletedFinalStateUnknown); ok {

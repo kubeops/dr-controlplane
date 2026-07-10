@@ -262,6 +262,8 @@ kmodules.xyz/custom-resources v0.34.0 h1:ljkIYzIq0A3Awj87kkpuYqS9aifuyR3Hr9q2OVK
 kmodules.xyz/custom-resources v0.34.0/go.mod h1:pcA/n/CnrycjKCRNtU9Z+l5svhzFncLY2Kn9pqeXDVs=
 kmodules.xyz/monitoring-agent-api v0.34.1 h1:0ANZgff50xF9D9cFng1NBVmSeLwiYPsZKiFLcxAY9bQ=
 kmodules.xyz/monitoring-agent-api v0.34.1/go.mod h1:XFDfMHDZQeNEPdTDeDr4M0dT4UCWs+4IYzgHw7JDlms=
+kubeops.dev/petset v0.1.1-0.20260709161836-19b3570c41ab h1:0aouI9IIIoHDwIOmLjgr0YXMab9f833ei8neEBPuG48=
+kubeops.dev/petset v0.1.1-0.20260709161836-19b3570c41ab/go.mod h1:zb++ZwjAon+cueexxhRSSxzJnNX1J/scqvDrGgeRHcQ=
 sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 h1:IpInykpT6ceI+QxKBbEflcR5EXP7sU1kvOlxwZh5txg=
 sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730/go.mod h1:mdzfpAEoE6DHQEN0uh9ZbOCuHbLK5wOm7dK4ctXE9Tg=
 sigs.k8s.io/randfill v1.0.0 h1:JfjMILfT8A6RbawdsK2JXGBR5AQVfd+9TbzrlneTyrU=
