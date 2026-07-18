@@ -76,7 +76,7 @@ func (a *Agent) renewHealth(ctx context.Context, name string) {
 
 	if err != nil {
 		a.metrics.HealthRenewErrors.Inc()
-		klog.V(2).ErrorS(err, "health Lease renewal failed (loss of etcd majority looks like this)", "lease", name)
+		klog.V(2).ErrorS(err, "health Lease renewal failed (loss of etcd majority looks like this)", "dcdr.scope", name)
 		return
 	}
 	a.metrics.HealthRenewals.Inc()

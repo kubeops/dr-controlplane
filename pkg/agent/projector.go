@@ -54,7 +54,7 @@ func (a *Agent) runProjector(ctx context.Context) {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	klog.InfoS("active DC marker projector running", "namespace", a.opts.MarkerNamespace, "interval", interval.String())
+	klog.InfoS("active DC marker projector running", "dcdr.dc", a.opts.DCName, "namespace", a.opts.MarkerNamespace, "interval", interval.String())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -97,7 +97,7 @@ func (a *Agent) projectMarkers(ctx context.Context, spoke kubernetes.Interface) 
 
 	for name, st := range snapshot {
 		if err := a.upsertMarker(ctx, spoke, name, st); err != nil {
-			klog.ErrorS(err, "failed to project active DC marker", "marker", name)
+			klog.ErrorS(err, "failed to project active DC marker", "dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		}
 	}
 }

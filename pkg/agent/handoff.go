@@ -79,8 +79,8 @@ func (a *Agent) clearHandoff(ctx context.Context, name string) {
 	}
 	if _, err := a.cs.CoordinationV1().Leases(a.opts.Namespace).
 		Patch(ctx, name, types.MergePatchType, raw, metav1.PatchOptions{}); err != nil {
-		klog.V(3).ErrorS(err, "failed to clear handoff annotation", "lease", name)
+		klog.V(3).ErrorS(err, "failed to clear handoff annotation", "dcdr.scope", name)
 		return
 	}
-	klog.InfoS("coordinated handoff complete, cleared handoff annotation", "lease", name, "dc", a.opts.DCName)
+	klog.InfoS("coordinated handoff complete, cleared handoff annotation", "dcdr.scope", name, "dcdr.dc", a.opts.DCName)
 }

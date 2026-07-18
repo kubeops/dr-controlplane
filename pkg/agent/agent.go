@@ -85,7 +85,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
 		return ctx.Err()
 	}
-	klog.InfoS("DC agent running", "dc", a.opts.DCName, "namespace", a.opts.Namespace)
+	klog.InfoS("DC agent running", "dcdr.dc", a.opts.DCName, "namespace", a.opts.Namespace)
 
 	<-ctx.Done()
 	a.stopAll()

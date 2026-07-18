@@ -61,7 +61,7 @@ func (e *scopeElector) setDesired(run bool) {
 		e.cancel = cancel
 		e.running = true
 		e.a.metrics.Contending.WithLabelValues(label).Set(1)
-		klog.InfoS("contending for primary DC Lease", "scope", label, "dc", e.a.opts.DCName)
+		klog.InfoS("contending for primary DC Lease", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 		go e.run(ctx)
 	} else {
 		if e.cancel != nil {
@@ -71,7 +71,7 @@ func (e *scopeElector) setDesired(run bool) {
 		e.running = false
 		e.a.metrics.Contending.WithLabelValues(label).Set(0)
 		e.a.metrics.IsPrimary.WithLabelValues(label).Set(0)
-		klog.InfoS("paused/stopped contending for primary DC Lease", "scope", label, "dc", e.a.opts.DCName)
+		klog.InfoS("paused/stopped contending for primary DC Lease", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 	}
 }
 
@@ -101,16 +101,16 @@ func (e *scopeElector) run(ctx context.Context) {
 			OnStartedLeading: func(context.Context) {
 				e.a.metrics.IsPrimary.WithLabelValues(label).Set(1)
 				e.a.metrics.ElectionTransitions.WithLabelValues(label, "acquired").Inc()
-				klog.InfoS("this DC is now primary", "scope", label, "dc", e.a.opts.DCName)
+				klog.InfoS("this DC is now primary", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 			},
 			OnStoppedLeading: func() {
 				e.a.metrics.IsPrimary.WithLabelValues(label).Set(0)
 				e.a.metrics.ElectionTransitions.WithLabelValues(label, "lost").Inc()
-				klog.InfoS("this DC is no longer primary", "scope", label, "dc", e.a.opts.DCName)
+				klog.InfoS("this DC is no longer primary", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 			},
 			OnNewLeader: func(id string) {
 				if id != e.a.opts.DCName && id != "" {
-					klog.InfoS("observed primary DC", "scope", label, "holder", id)
+					klog.InfoS("observed primary DC", "dcdr.scope", label, "dcdr.leaseHolder", id)
 				}
 			},
 		},
