@@ -26,22 +26,28 @@ func TestDesiredContend(t *testing.T) {
 		holder         string
 		dc             string
 		targetIsMember bool
+		overrideHold   string
 		want           bool
 	}{
-		{"arbiter or witness never contends", false, "", "dc-a", "dc-c", false, false},
-		{"member contends normally", true, "", "dc-a", "dc-b", false, true},
-		{"member is the handoff target, contends eagerly", true, "dc-b", "dc-a", "dc-b", true, true},
-		{"non-holder member pauses during handoff to another member", true, "dc-a", "dc-b", "dc-c", true, false},
-		{"current holder releases during handoff to another member", true, "dc-a", "dc-b", "dc-b", true, false},
-		{"handoff complete, target holds, resume normal", true, "dc-a", "dc-a", "dc-b", true, true},
-		{"non member ignores handoff entirely", false, "dc-c", "", "dc-c", true, false},
-		{"member ignores handoff to a non-member target (no no-primary deadlock)", true, "dc-z", "dc-a", "dc-a", false, true},
+		{"arbiter or witness never contends", false, "", "dc-a", "dc-c", false, "", false},
+		{"member contends normally", true, "", "dc-a", "dc-b", false, "", true},
+		{"member is the handoff target, contends eagerly", true, "dc-b", "dc-a", "dc-b", true, "", true},
+		{"non-holder member pauses during handoff to another member", true, "dc-a", "dc-b", "dc-c", true, "", false},
+		{"current holder releases during handoff to another member", true, "dc-a", "dc-b", "dc-b", true, "", false},
+		{"handoff complete, target holds, resume normal", true, "dc-a", "dc-a", "dc-b", true, "", true},
+		{"non member ignores handoff entirely", false, "dc-c", "", "dc-c", true, "", false},
+		{"member ignores handoff to a non-member target (no no-primary deadlock)", true, "dc-z", "dc-a", "dc-a", false, "", true},
+		{"break glass: pinned DC keeps contending (holds/renews)", true, "", "dc-a", "dc-a", false, "dc-a", true},
+		{"break glass: non-pinned member defers unconditionally", true, "", "dc-a", "dc-b", false, "dc-a", false},
+		{"break glass: arbiter/witness still never contends", false, "", "dc-a", "dc-c", false, "dc-a", false},
+		{"break glass overrides an in progress handoff to another member", true, "dc-b", "dc-a", "dc-b", true, "dc-a", false},
+		{"break glass overrides a handoff whose target is the pinned DC itself", true, "dc-a", "dc-b", "dc-a", true, "dc-a", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := desiredContend(tc.isMember, tc.handoffTo, tc.holder, tc.dc, tc.targetIsMember); got != tc.want {
-				t.Fatalf("desiredContend(member=%v, handoffTo=%q, holder=%q, dc=%q, targetIsMember=%v) = %v, want %v",
-					tc.isMember, tc.handoffTo, tc.holder, tc.dc, tc.targetIsMember, got, tc.want)
+			if got := desiredContend(tc.isMember, tc.handoffTo, tc.holder, tc.dc, tc.targetIsMember, tc.overrideHold); got != tc.want {
+				t.Fatalf("desiredContend(member=%v, handoffTo=%q, holder=%q, dc=%q, targetIsMember=%v, overrideHold=%q) = %v, want %v",
+					tc.isMember, tc.handoffTo, tc.holder, tc.dc, tc.targetIsMember, tc.overrideHold, got, tc.want)
 			}
 		})
 	}

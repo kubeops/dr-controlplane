@@ -29,12 +29,19 @@ import (
 )
 
 // desiredContend decides whether this DC should actively contend for a scope's
-// primary DC Lease right now, given its membership and any in progress
-// coordinated handoff. handoffTargetIsMember reports whether handoffTo names a
-// Member data center (one that can actually become primary).
+// primary DC Lease right now, given its membership, any in progress coordinated
+// handoff, and any break glass override-hold pin. handoffTargetIsMember reports
+// whether handoffTo names a Member data center (one that can actually become
+// primary). overrideHold is leases.AnnOverrideHold's value, empty when unset.
 //
 //   - Arbiter and Witness DCs (not members) never contend.
-//   - Normally a Member contends.
+//   - A break glass override-hold pin (A43(c)) is an absolute veto: every
+//     Member other than the named DC defers unconditionally, regardless of
+//     handoff state or anything else. The named DC contends (this is how it
+//     holds/renews the Lease through the pin). This must be checked before the
+//     handoff logic below, since a stale or in progress handoff must never let
+//     a non-pinned DC contend while override-hold is set.
+//   - Normally (no pin) a Member contends.
 //   - During a handoff to another Member, a Member pauses so the target can
 //     acquire. If this DC currently holds the Lease, pausing releases it
 //     (ReleaseOnCancel).
@@ -44,9 +51,12 @@ import (
 //     removed from the set mid handoff) is ignored. Otherwise every Member would
 //     pause for a target that can never acquire, leaving the scope with no
 //     primary at all.
-func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIsMember bool) bool {
+func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIsMember bool, overrideHold string) bool {
 	if !isMember {
 		return false
+	}
+	if overrideHold != "" {
+		return overrideHold == dc
 	}
 	if handoffTo == "" || !handoffTargetIsMember || handoffTo == dc {
 		return true

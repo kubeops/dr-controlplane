@@ -126,6 +126,17 @@ func (a *Agent) onDelete(obj any) {
 }
 
 // reconcile drives this DC's contention for one primary DC Lease.
+//
+// Cold-start safety (A43(c)): electorFor only ever creates and starts a scope's
+// elector from inside this function, and this function only ever runs when the
+// Lease informer delivers an event for that Lease, which cache.WaitForCacheSync
+// guarantees happens for every pre-existing Lease before Run returns. So a
+// freshly started or restarted agent has zero electors, hence contends for
+// nothing, until it has read the current Lease state at least once; there is no
+// code path that can start contention from a nil or never-observed Lease. This
+// is a structural property of the call graph (electorFor has exactly one call
+// site, right here), not a runtime flag, so keep it that way: do not add a
+// second path into electorFor that bypasses an observed Lease.
 func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	scope, ok := leases.ScopeFromPrimaryLeaseName(l.Name)
 	if !ok {
@@ -133,11 +144,12 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	}
 	members := l.Annotations[leases.AnnMemberDCs]
 	handoffTo := l.Annotations[leases.AnnHandoffTo]
+	overrideHold := l.Annotations[leases.AnnOverrideHold]
 	holder := holderOf(l)
 	isMember := leases.ContainsMember(members, a.opts.DCName)
 	handoffTargetIsMember := handoffTo != "" && leases.ContainsMember(members, handoffTo)
 
-	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember)
+	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold)
 	a.electorFor(scope, l.Name).setDesired(contend)
 
 	// Record the holder and the Lease renewTime for the projector. Tying the marker

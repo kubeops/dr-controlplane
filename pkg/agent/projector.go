@@ -48,7 +48,9 @@ const (
 // runProjector mirrors each scope's primary DC holder into the local spoke as a
 // marker ConfigMap, refreshed on an interval. A healthy agent restamps a fresh
 // renewTime; a partitioned agent stops seeing Lease updates so the value freezes
-// and the fence trips. Projection failures never take down the agent.
+// and the fence trips. Projection failures never take down the agent. On the
+// same tick it also reconciles the break glass override-hold Lease annotation
+// against this DC's local override ConfigMap (see override.go, A43(c)).
 func (a *Agent) runProjector(ctx context.Context) {
 	interval := a.opts.MarkerRefreshInterval
 	if interval <= 0 {
@@ -83,6 +85,7 @@ func (a *Agent) runProjector(ctx context.Context) {
 				klog.InfoS("active DC marker projector spoke client ready")
 			}
 			a.projectMarkers(ctx, spoke)
+			a.reconcileOverrides(ctx, spoke)
 		}
 	}
 }
