@@ -20,28 +20,49 @@ import "testing"
 
 func TestStandbyHoldTransitionLog(t *testing.T) {
 	cases := []struct {
-		name           string
-		wasActive      bool
-		active         bool
-		isHolder       bool
-		wantStepDown   bool
-		wantHeld       bool
-		wantCleared    bool
+		name        string
+		wasActive   bool
+		active      bool
+		isHolder    bool
+		wantHeld    bool
+		wantCleared bool
 	}{
-		{"newly held on the current holder: loud controlled step-down", false, true, true, true, false, false},
-		{"newly held on a non-holder standby: ordinary held log", false, true, false, false, true, false},
-		{"still held, no change: silent", true, true, false, false, false, false},
-		{"still held on the holder, no change: silent (no repeat step-down spam)", true, true, true, false, false, false},
-		{"newly cleared while it had been held on the holder: cleared log", true, false, true, false, false, true},
-		{"newly cleared while it had been held on a standby: cleared log", true, false, false, false, false, true},
-		{"never active: silent", false, false, false, false, false, false},
+		{"newly held on the current holder: no transition log here, standbyHoldIgnoredOnActive covers it", false, true, true, false, false},
+		{"newly held on a non-holder standby: ordinary held log", false, true, false, true, false},
+		{"still held, no change: silent", true, true, false, false, false},
+		{"still held on the holder, no change: silent", true, true, true, false, false},
+		{"newly cleared while it had been held on the holder: cleared log", true, false, true, false, true},
+		{"newly cleared while it had been held on a standby: cleared log", true, false, false, false, true},
+		{"never active: silent", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stepDown, held, cleared := standbyHoldTransitionLog(tc.wasActive, tc.active, tc.isHolder)
-			if stepDown != tc.wantStepDown || held != tc.wantHeld || cleared != tc.wantCleared {
-				t.Fatalf("standbyHoldTransitionLog(wasActive=%v, active=%v, isHolder=%v) = (%v, %v, %v), want (%v, %v, %v)",
-					tc.wasActive, tc.active, tc.isHolder, stepDown, held, cleared, tc.wantStepDown, tc.wantHeld, tc.wantCleared)
+			held, cleared := standbyHoldTransitionLog(tc.wasActive, tc.active, tc.isHolder)
+			if held != tc.wantHeld || cleared != tc.wantCleared {
+				t.Fatalf("standbyHoldTransitionLog(wasActive=%v, active=%v, isHolder=%v) = (%v, %v), want (%v, %v)",
+					tc.wasActive, tc.active, tc.isHolder, held, cleared, tc.wantHeld, tc.wantCleared)
+			}
+		})
+	}
+}
+
+func TestStandbyHoldIgnoredOnActive(t *testing.T) {
+	cases := []struct {
+		name     string
+		active   bool
+		isHolder bool
+		want     bool
+	}{
+		{"active on the current holder: ignored, loud log expected (A45)", true, true, true},
+		{"active on a non-holder: takes effect, no ignored log", true, false, false},
+		{"inactive on the holder: nothing to ignore", false, true, false},
+		{"inactive on a non-holder: nothing to ignore", false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := standbyHoldIgnoredOnActive(tc.active, tc.isHolder); got != tc.want {
+				t.Fatalf("standbyHoldIgnoredOnActive(active=%v, isHolder=%v) = %v, want %v",
+					tc.active, tc.isHolder, got, tc.want)
 			}
 		})
 	}
@@ -52,18 +73,20 @@ func TestStandbyHoldConflict(t *testing.T) {
 		name           string
 		standbyActive  bool
 		overrideActive bool
+		isHolder       bool
 		want           bool
 	}{
-		{"neither present: no conflict", false, false, false},
-		{"only standby-hold present: no conflict", true, false, false},
-		{"only override present: no conflict", false, true, false},
-		{"both present: conflict", true, true, true},
+		{"neither present: no conflict", false, false, false, false},
+		{"only standby-hold present: no conflict", true, false, false, false},
+		{"only override present: no conflict", false, true, false, false},
+		{"both present, non-holder: conflict, standby-hold wins", true, true, false, true},
+		{"both present, current holder: no conflict, standby-hold is ignored here (A45)", true, true, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := standbyHoldConflict(tc.standbyActive, tc.overrideActive); got != tc.want {
-				t.Fatalf("standbyHoldConflict(standbyActive=%v, overrideActive=%v) = %v, want %v",
-					tc.standbyActive, tc.overrideActive, got, tc.want)
+			if got := standbyHoldConflict(tc.standbyActive, tc.overrideActive, tc.isHolder); got != tc.want {
+				t.Fatalf("standbyHoldConflict(standbyActive=%v, overrideActive=%v, isHolder=%v) = %v, want %v",
+					tc.standbyActive, tc.overrideActive, tc.isHolder, got, tc.want)
 			}
 		})
 	}

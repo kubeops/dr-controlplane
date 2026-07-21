@@ -86,10 +86,13 @@ const OverrideConfigMapSuffix = "-override"
 // OverrideConfigMapSuffix (A44): <name>+StandbyHoldConfigMapSuffix, in the same
 // coordination namespace on the spoke that carries the marker (for example
 // primary-dc-standby-hold for the global scope). Presence forces that DC to
-// never contend for the scope's primary DC Lease, so it never promotes and, if
-// applied to the current holder, steps it down. Manual only, same contract as
-// break glass: a human sets and clears it directly on the spoke, this agent
-// and pg-coordinator only ever Get it.
+// never contend for the scope's primary DC Lease, so it never promotes, UNLESS
+// that DC is the current holder (A45 correction): standby-hold is ignored,
+// logged loudly, and has no effect on the active DC, since demoting it without
+// a quiesce/catch-up is unsafe and the safe way to move the primary is a
+// planned switchover. Manual only, same contract as break glass: a human sets
+// and clears it directly on the spoke, this agent and pg-coordinator only ever
+// Get it.
 //
 // Unlike OverrideConfigMapSuffix, standby-hold does not get a companion
 // dr.open-cluster-management.io/* Lease annotation. Break glass needs one

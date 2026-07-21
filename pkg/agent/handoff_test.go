@@ -43,11 +43,13 @@ func TestDesiredContend(t *testing.T) {
 		{"break glass: arbiter/witness still never contends", false, "", "dc-a", "dc-c", false, "dc-a", false, false},
 		{"break glass overrides an in progress handoff to another member", true, "dc-b", "dc-a", "dc-b", true, "dc-a", false, false},
 		{"break glass overrides a handoff whose target is the pinned DC itself", true, "dc-a", "dc-b", "dc-a", true, "dc-a", false, true},
-		{"standby-hold: held member never contends even with an otherwise clean Lease", true, "", "dc-a", "dc-b", false, "", true, false},
-		{"standby-hold: held member never contends even as the handoff target", true, "dc-b", "dc-a", "dc-b", true, "", true, false},
-		{"standby-hold: current holder demotes, stops contending/renewing", true, "", "dc-a", "dc-a", false, "", true, false},
+		{"standby-hold: held member (not the holder) never contends even with an otherwise clean Lease", true, "", "dc-a", "dc-b", false, "", true, false},
+		{"standby-hold: held member (not the holder) never contends even as the handoff target", true, "dc-b", "dc-a", "dc-b", true, "", true, false},
+		{"standby-hold: ignored on the current holder, keeps contending/renewing (A45 correction)", true, "", "dc-a", "dc-a", false, "", true, true},
 		{"standby-hold: arbiter/witness still never contends", false, "", "dc-a", "dc-c", false, "", true, false},
-		{"standby-hold beats break glass on the same DC (conflict, fail safe to standby)", true, "", "dc-a", "dc-a", false, "dc-a", true, false},
+		{"standby-hold ignored on the current holder even when break glass also pins it to itself (A45)", true, "", "dc-a", "dc-a", false, "dc-a", true, true},
+		{"standby-hold beats break glass on a non-holder DC (conflict, fail safe to standby)", true, "", "dc-b", "dc-a", false, "dc-a", true, false},
+		{"standby-hold ignored on the current holder does not break an in progress handoff away from it", true, "dc-b", "dc-a", "dc-a", true, "", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -39,16 +39,23 @@ import (
 // off the Lease, see standbyhold.go for why.
 //
 //   - Arbiter and Witness DCs (not members) never contend.
-//   - Standby-hold (A44) is an absolute veto on THIS DC alone: while its own
-//     standby-hold ConfigMap is present it never contends, full stop. This is
+//   - Standby-hold (A44, corrected by A45) is an absolute veto on THIS DC
+//     alone, UNLESS this DC is the scope's current Lease holder (holder == dc,
+//     the same equality the handoff logic below already uses to mean "this DC
+//     currently holds the Lease"). On a non-holder DC, while its own
+//     standby-hold ConfigMap is present it never contends, full stop: this is
 //     checked before everything else, including override-hold, so that if a
-//     human somehow sets both markers on the same DC, standby-hold wins:
-//     fail safe means staying a non-promoting standby, not forcing active.
-//     Applied to a Member that already holds the Lease, this is what drives the
-//     controlled step-down (see reconcileStandbyHold's loud log for the DC that
-//     loses the Lease this way); the Lease release itself is the ordinary
-//     ReleaseOnCancel consequence of setDesired(false) on the current holder's
-//     elector, no new release path was needed.
+//     human somehow sets both markers on a DC that is not the current holder,
+//     standby-hold wins, fail safe means staying a non-promoting standby, not
+//     forcing active. On the CURRENT HOLDER, standby-hold is ignored (a no-op)
+//     and logged loudly (see reconcileStandbyHold): it must never stop the
+//     active DC from contending or let it drop the Lease, since demoting the
+//     active DC without a quiesce/catch-up is unsafe, and stripping the sole
+//     role=primary pod breaks the primary Service DNS every pod depends on
+//     (the N172 finding). To move the primary, use a planned switchover
+//     (dr.kubedb.com/switchover-to) instead. When ignored this way, evaluation
+//     falls through to the override-hold and handoff checks below exactly as
+//     if standby-hold were unset.
 //   - A break glass override-hold pin (A43(c)) is otherwise an absolute veto:
 //     every Member other than the named DC defers unconditionally, regardless
 //     of handoff state or anything else. The named DC contends (this is how it
@@ -68,7 +75,7 @@ func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIs
 	if !isMember {
 		return false
 	}
-	if standbyHold {
+	if standbyHold && holder != dc {
 		return false
 	}
 	if overrideHold != "" {

@@ -26,13 +26,28 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// Standby-hold (A44), the mirror of break glass override (A43(c), override.go).
+// Standby-hold (A44, corrected by A45), the mirror of break glass override
+// (A43(c), override.go).
 //
 // A human places a <marker>-standby-hold ConfigMap on a spoke to force that DC
 // to never contend for the scope's primary DC Lease, so it never promotes,
 // while the marker exists. Manual only, same contract as break glass: this
 // agent only ever Gets the ConfigMap, never writes or deletes it
 // (localStandbyHoldActive matches localOverrideActive byte for byte in shape).
+//
+// A45 correction: standby-hold must never demote or fence the CURRENT ACTIVE
+// DC. A44's original build treated standby-hold on the current holder as a
+// controlled step-down (release the Lease, another Member promotes); live
+// testing (N172) showed this is unsafe and redundant, it drops the Lease with
+// no quiesce/catch-up, and it strips the sole role=primary pod, which breaks
+// the primary Service DNS every pod depends on and does not self heal
+// promptly. Standby-hold's only legitimate target is a NON-active DC
+// (reconvergence: a returning standby that must not race for the Lease, or a
+// standby parked so it will not auto-promote). Applied to the current holder,
+// it is now a logged no-op: desiredContend (handoff.go) ignores it whenever
+// holder == dc, and this file logs the ignored case loudly, every tick it
+// persists, so a human who set it on the wrong DC notices. To move the
+// primary, the runbook is a planned switchover (dr.kubedb.com/switchover-to).
 //
 // The key design difference from override-hold: standby-hold's effect is
 // purely local. desiredContend's overrideHold veto has to travel over the
@@ -49,18 +64,23 @@ import (
 // it is refreshed on the same fast ticker as the marker projector and the
 // override reconciler (runProjector, MarkerRefreshInterval, 5s default).
 //
-// Interaction with break glass on the SAME DC: if a human sets both markers on
-// one DC, they conflict (one demands active, the other demands standby).
-// desiredContend resolves it deterministically: standby-hold is checked first
-// and wins unconditionally (fail safe: stay a non-promoting standby). This
-// file additionally detects and loudly logs the coexistence every tick it
-// persists (standbyHoldConflict), the same "log every tick while the anomaly
-// persists" treatment reconcileOverrideHold already gives an override
-// ConfigMap placed on the wrong spoke. dr-controlplane does not own any
-// Postgres (or other workload) CR status, so there is no natural Condition
-// surface to set from here; a loud structured log line at the point of
-// detection is the deliberate, documented minimum for this repo, matching the
-// A44 instruction to use a log line when no Condition surface exists.
+// Interaction with break glass on a NON-holder DC: if a human sets both
+// markers on the same DC and that DC is not the current holder, they conflict
+// (one demands active, the other demands standby). desiredContend resolves it
+// deterministically: standby-hold is checked first and wins unconditionally
+// (fail safe: stay a non-promoting standby). This file additionally detects
+// and loudly logs the coexistence every tick it persists (standbyHoldConflict),
+// the same "log every tick while the anomaly persists" treatment
+// reconcileOverrideHold already gives an override ConfigMap placed on the
+// wrong spoke. On the CURRENT HOLDER there is no such conflict to resolve:
+// standby-hold is ignored outright (A45), so whatever override-hold says is
+// what governs; standbyHoldConflict is gated to the non-holder case so its
+// "standby-hold wins" message is never logged somewhere it would be false.
+// dr-controlplane does not own any Postgres (or other workload) CR status, so
+// there is no natural Condition surface to set from here; a loud structured
+// log line at the point of detection is the deliberate, documented minimum
+// for this repo, matching the A44 instruction to use a log line when no
+// Condition surface exists.
 
 // localStandbyHoldActive reports whether this DC's own spoke carries the
 // standby-hold ConfigMap for scope leaseName. Get only, matching
@@ -78,46 +98,64 @@ func (a *Agent) localStandbyHoldActive(ctx context.Context, spoke kubernetes.Int
 // decide which single state-change log (if any) to emit this tick. Mirrors
 // overrideDecision's shape: no I/O, easy to table test.
 //
-// stepDown fires exactly once, on the tick standby-hold newly becomes active
-// while this DC is the current holder: this is the controlled demotion case,
-// and it must be loud and unambiguous, distinct from the elector's own
-// generic "paused/stopped contending" log, since a human needs to be able to
-// grep for why a DC that used to be primary is not primary anymore.
 // held fires once when standby-hold newly becomes active on a DC that is not
-// currently the holder, the ordinary "stays a non-promoting standby" case.
-// cleared fires once when standby-hold goes away, either case.
-func standbyHoldTransitionLog(wasActive, active, isHolder bool) (stepDown, held, cleared bool) {
+// currently the holder, the ordinary "stays a non-promoting standby" case,
+// the only case where standby-hold actually takes effect. On the current
+// holder, standby-hold never takes effect (A45), so no transition fires here
+// for that case, standbyHoldIgnoredOnActive below covers it with its own,
+// persistent, log instead of a one-shot transition log.
+// cleared fires once when standby-hold goes away, either case: it is safe to
+// state plainly regardless of whether the DC was the (unaffected) holder or
+// an actually-held non-holder.
+func standbyHoldTransitionLog(wasActive, active, isHolder bool) (held, cleared bool) {
 	switch {
-	case active && !wasActive && isHolder:
-		return true, false, false
-	case active && !wasActive:
-		return false, true, false
+	case active && !wasActive && !isHolder:
+		return true, false
 	case !active && wasActive:
-		return false, false, true
+		return false, true
 	default:
-		return false, false, false
+		return false, false
 	}
 }
 
+// standbyHoldIgnoredOnActive reports whether standby-hold is active on this
+// DC while this DC is also the scope's current Lease holder, the A45
+// corrected no-op case: desiredContend (handoff.go) ignores standby-hold
+// entirely on the active DC, it never demotes or fences it. This predicate
+// drives the loud log that makes the no-op visible, called every tick it
+// persists (not just once on transition), the same "log every tick while the
+// anomaly persists" treatment standbyHoldConflict already gets, since a human
+// who set the marker on the wrong (active) DC needs to keep seeing why
+// nothing is happening for as long as they leave it there.
+func standbyHoldIgnoredOnActive(active, isHolder bool) bool {
+	return active && isHolder
+}
+
 // standbyHoldConflict reports whether both standby-hold and break glass
-// override are simultaneously active on this DC for the same scope, the
-// precedence case desiredContend resolves by letting standby-hold win. Pure
-// function of the two observed booleans, called every tick so the conflict
-// stays loud for as long as it persists (see the wrong-spoke override log in
-// reconcileOverrideHold for the same "log every tick, not just on
-// transition" treatment of an anomalous, human-fixable state).
-func standbyHoldConflict(standbyActive, overrideActive bool) bool {
-	return standbyActive && overrideActive
+// override are simultaneously active on this DC for the same scope AND this
+// DC is not the current holder, the precedence case desiredContend resolves
+// by letting standby-hold win. Gated to the non-holder case (A45): on the
+// current holder standby-hold is ignored outright, so there is no real
+// "standby-hold wins" conflict to report, standbyHoldIgnoredOnActive covers
+// that case instead. Pure function of the observed booleans, called every
+// tick so the conflict stays loud for as long as it persists (see the
+// wrong-spoke override log in reconcileOverrideHold for the same "log every
+// tick, not just on transition" treatment of an anomalous, human-fixable
+// state).
+func standbyHoldConflict(standbyActive, overrideActive, isHolder bool) bool {
+	return standbyActive && overrideActive && !isHolder
 }
 
 // reconcileStandbyHold refreshes this DC's cached standby-hold state for
-// every scope this agent currently tracks, and emits the state-change and
-// conflict logs standbyHoldTransitionLog and standbyHoldConflict decide on.
-// It never writes anything, to the spoke ConfigMap or to the Lease; the
-// actual behavior change (this DC stops contending, and if it was the
-// holder, releases the Lease) happens the ordinary way, the next time
-// reconcile (agent.go) runs off a Lease informer event and calls
-// desiredContend with the cached value this function just wrote.
+// every scope this agent currently tracks, and emits the state-change,
+// ignored-on-active, and conflict logs standbyHoldTransitionLog,
+// standbyHoldIgnoredOnActive, and standbyHoldConflict decide on. It never
+// writes anything, to the spoke ConfigMap or to the Lease; the actual
+// behavior change (a non-holder DC stops contending) happens the ordinary
+// way, the next time reconcile (agent.go) runs off a Lease informer event
+// and calls desiredContend with the cached value this function just wrote.
+// On the current holder, per A45, there is no behavior change to happen:
+// desiredContend ignores standby-hold there and the DC keeps contending.
 func (a *Agent) reconcileStandbyHold(ctx context.Context, spoke kubernetes.Interface) {
 	a.mu.Lock()
 	snapshot := make(map[string]markerState, len(a.holders))
@@ -136,20 +174,22 @@ func (a *Agent) reconcileStandbyHold(ctx context.Context, spoke kubernetes.Inter
 		a.mu.Unlock()
 
 		isHolder := st.dc == a.opts.DCName
-		stepDown, held, cleared := standbyHoldTransitionLog(wasActive, active, isHolder)
+		held, cleared := standbyHoldTransitionLog(wasActive, active, isHolder)
 		switch {
-		case stepDown:
-			klog.ErrorS(nil, "DC-DR STANDBY-HOLD ACTIVE on the current primary DC: this DC stops contending and will release the primary DC Lease, a controlled step-down, another Member DC will be promoted",
-				"dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		case held:
 			klog.InfoS("DC-DR standby-hold ConfigMap present, this DC will not contend for the primary DC Lease while it exists",
 				"dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		case cleared:
-			klog.InfoS("DC-DR standby-hold ConfigMap cleared, normal contention resumes",
+			klog.InfoS("DC-DR standby-hold ConfigMap cleared",
 				"dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		}
 
-		if standbyHoldConflict(active, overrideActive) {
+		if standbyHoldIgnoredOnActive(active, isHolder) {
+			klog.ErrorS(nil, "standby-hold ignored on the active DC; to move the primary use a planned switchover (dr.kubedb.com/switchover-to)",
+				"dcdr.dc", a.opts.DCName, "dcdr.scope", name)
+		}
+
+		if standbyHoldConflict(active, overrideActive, isHolder) {
 			klog.ErrorS(nil, "DC-DR CONFLICT: both break glass override and standby-hold ConfigMaps are present on this DC for the same scope, they demand opposite outcomes, standby-hold takes precedence (fail safe: stay standby, never promote), a human must clear one of the two markers to resolve this",
 				"dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		}
