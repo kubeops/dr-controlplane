@@ -41,9 +41,10 @@ type Agent struct {
 
 	rootCtx context.Context
 
-	mu       sync.Mutex
-	electors map[string]*scopeElector // keyed by primary Lease name
-	holders  map[string]markerState   // keyed by primary Lease name
+	mu          sync.Mutex
+	electors    map[string]*scopeElector // keyed by primary Lease name
+	holders     map[string]markerState   // keyed by primary Lease name
+	standbyHold map[string]bool          // keyed by primary Lease name, see standbyhold.go
 }
 
 // markerState is the per scope value the projector writes to the spoke: which DC
@@ -58,11 +59,12 @@ type markerState struct {
 // New builds an Agent.
 func New(opts Options, cs kubernetes.Interface, metrics *Metrics) *Agent {
 	return &Agent{
-		opts:     opts,
-		cs:       cs,
-		metrics:  metrics,
-		electors: map[string]*scopeElector{},
-		holders:  map[string]markerState{},
+		opts:        opts,
+		cs:          cs,
+		metrics:     metrics,
+		electors:    map[string]*scopeElector{},
+		holders:     map[string]markerState{},
+		standbyHold: map[string]bool{},
 	}
 }
 
@@ -149,7 +151,14 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	isMember := leases.ContainsMember(members, a.opts.DCName)
 	handoffTargetIsMember := handoffTo != "" && leases.ContainsMember(members, handoffTo)
 
-	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold)
+	// standbyHold is never on the Lease (see standbyhold.go); it is this DC's
+	// own cached read of its local standby-hold ConfigMap, refreshed on the
+	// same ticker as the marker projector and override reconciler.
+	a.mu.Lock()
+	standbyHold := a.standbyHold[l.Name]
+	a.mu.Unlock()
+
+	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold)
 	a.electorFor(scope, l.Name).setDesired(contend)
 
 	// Record the holder and the Lease renewTime for the projector. Tying the marker

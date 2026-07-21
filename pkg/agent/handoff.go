@@ -30,18 +30,31 @@ import (
 
 // desiredContend decides whether this DC should actively contend for a scope's
 // primary DC Lease right now, given its membership, any in progress coordinated
-// handoff, and any break glass override-hold pin. handoffTargetIsMember reports
-// whether handoffTo names a Member data center (one that can actually become
-// primary). overrideHold is leases.AnnOverrideHold's value, empty when unset.
+// handoff, any break glass override-hold pin, and any local standby-hold veto.
+// handoffTargetIsMember reports whether handoffTo names a Member data center
+// (one that can actually become primary). overrideHold is
+// leases.AnnOverrideHold's value, empty when unset. standbyHold reports
+// whether THIS DC's own spoke currently carries its standby-hold ConfigMap
+// (leases.StandbyHoldConfigMapSuffix); unlike overrideHold this is never read
+// off the Lease, see standbyhold.go for why.
 //
 //   - Arbiter and Witness DCs (not members) never contend.
-//   - A break glass override-hold pin (A43(c)) is an absolute veto: every
-//     Member other than the named DC defers unconditionally, regardless of
-//     handoff state or anything else. The named DC contends (this is how it
-//     holds/renews the Lease through the pin). This must be checked before the
-//     handoff logic below, since a stale or in progress handoff must never let
-//     a non-pinned DC contend while override-hold is set.
-//   - Normally (no pin) a Member contends.
+//   - Standby-hold (A44) is an absolute veto on THIS DC alone: while its own
+//     standby-hold ConfigMap is present it never contends, full stop. This is
+//     checked before everything else, including override-hold, so that if a
+//     human somehow sets both markers on the same DC, standby-hold wins:
+//     fail safe means staying a non-promoting standby, not forcing active.
+//     Applied to a Member that already holds the Lease, this is what drives the
+//     controlled step-down (see reconcileStandbyHold's loud log for the DC that
+//     loses the Lease this way); the Lease release itself is the ordinary
+//     ReleaseOnCancel consequence of setDesired(false) on the current holder's
+//     elector, no new release path was needed.
+//   - A break glass override-hold pin (A43(c)) is otherwise an absolute veto:
+//     every Member other than the named DC defers unconditionally, regardless
+//     of handoff state or anything else. The named DC contends (this is how it
+//     holds/renews the Lease through the pin), unless standby-hold above already
+//     vetoed it.
+//   - Normally (no pin, no hold) a Member contends.
 //   - During a handoff to another Member, a Member pauses so the target can
 //     acquire. If this DC currently holds the Lease, pausing releases it
 //     (ReleaseOnCancel).
@@ -51,8 +64,11 @@ import (
 //     removed from the set mid handoff) is ignored. Otherwise every Member would
 //     pause for a target that can never acquire, leaving the scope with no
 //     primary at all.
-func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIsMember bool, overrideHold string) bool {
+func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIsMember bool, overrideHold string, standbyHold bool) bool {
 	if !isMember {
+		return false
+	}
+	if standbyHold {
 		return false
 	}
 	if overrideHold != "" {

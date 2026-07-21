@@ -50,7 +50,9 @@ const (
 // renewTime; a partitioned agent stops seeing Lease updates so the value freezes
 // and the fence trips. Projection failures never take down the agent. On the
 // same tick it also reconciles the break glass override-hold Lease annotation
-// against this DC's local override ConfigMap (see override.go, A43(c)).
+// against this DC's local override ConfigMap (see override.go, A43(c)), and
+// refreshes this DC's cached standby-hold state against its local standby-hold
+// ConfigMap (see standbyhold.go, A44).
 func (a *Agent) runProjector(ctx context.Context) {
 	interval := a.opts.MarkerRefreshInterval
 	if interval <= 0 {
@@ -86,6 +88,7 @@ func (a *Agent) runProjector(ctx context.Context) {
 			}
 			a.projectMarkers(ctx, spoke)
 			a.reconcileOverrides(ctx, spoke)
+			a.reconcileStandbyHold(ctx, spoke)
 		}
 	}
 }
