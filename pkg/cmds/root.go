@@ -43,6 +43,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(v.NewCmdVersion())
 	rootCmd.AddCommand(newCmdAgent())
 	rootCmd.AddCommand(newCmdController())
+	rootCmd.AddCommand(newCmdAddonManager())
 	rootCmd.AddCommand(newCmdStatus())
 	rootCmd.AddCommand(newCmdSwitchover())
 

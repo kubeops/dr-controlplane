@@ -1,0 +1,36 @@
+# Values for the dr-controlplane-agent OCM addon chart.
+# The addon manager injects clusterName (the ManagedCluster name), namespace, and
+# agent.coordKubeconfigSecret per cluster. The rest are defaults.
+
+# clusterName is the ManagedCluster name. Injected by the addon manager and used
+# as the agent --dc-name. Required at render time.
+clusterName: ""
+
+# namespace where the agent runs and the coordination Leases live on the spoke.
+namespace: dc-failover
+# createNamespace makes the chart emit the target Namespace object.
+createNamespace: true
+
+# Container image for the dr-controlplane binary.
+image:
+  repository: ghcr.io/appscode/dr-controlplane
+  tag: ""          # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+agent:
+  # Kubeconfig Secret for the coordination control plane (key: kubeconfig).
+  # Empty disables the mount and the agent uses the in cluster config.
+  coordKubeconfigSecret: coord-kubeconfig
+  metricsAddr: ":8080"
+  health:
+    leaseDurationSeconds: 15
+    renewIntervalSeconds: 5
+  election:
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  resources: {}
+
+nodeSelector: {}
+tolerations: []
