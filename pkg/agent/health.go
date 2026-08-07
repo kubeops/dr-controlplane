@@ -80,7 +80,17 @@ func (a *Agent) renewHealth(ctx context.Context, name string) {
 
 	if err != nil {
 		a.metrics.HealthRenewErrors.Inc()
-		klog.V(2).ErrorS(err, "health Lease renewal failed (loss of etcd majority looks like this)", "dcdr.scope", name)
+		if credentialClassError(err) {
+			// Only credential-class failures may fail the liveness probe: a
+			// restart re-reads the mounted kubeconfig, which is the one thing
+			// it can fix. Plain unreachability must never restart the writer
+			// (observed live: the probe bounced the writer role between
+			// replicas for an entire hub outage).
+			a.noteAuthFailure()
+			klog.ErrorS(err, "health Lease renewal failed with a credential-class error; the liveness probe will restart this pod to reload the kubeconfig", "dcdr.scope", name)
+			return
+		}
+		klog.V(2).ErrorS(err, "health Lease renewal failed (hub unreachable or etcd majority lost; fail-closed fencing protects the databases)", "dcdr.scope", name)
 		return
 	}
 	a.metrics.HealthRenewals.Inc()

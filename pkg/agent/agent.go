@@ -22,6 +22,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,10 +72,20 @@ type Agent struct {
 	// override reconciliation) is gated on it; non-writers only observe.
 	isWriter atomic.Bool
 
-	// observationSynced is set once the hub Lease informer has synced. It is the
-	// non-writer replica's health signal: a hot standby is healthy when its view
-	// of the hub is live, not when it writes (it never writes).
+	// observationSynced is set once the hub Lease informer has synced. Kept for
+	// introspection; deliberately NOT a liveness input (see Healthy).
 	observationSynced atomic.Bool
+
+	// lastAuthFailure is the UnixNano of the last hub write that failed with a
+	// credential-class error (x509, unauthorized, invalid token). Only these
+	// failures make the liveness probe restart the pod, because a restart
+	// re-reads the mounted kubeconfig Secret and that is the ONLY failure a
+	// restart can fix. Observed live 2026-08-07: failing the probe on plain
+	// unreachability liveness-killed the writer every ~90s for the whole hub
+	// outage, each SIGTERM released the writer lease, the role bounced between
+	// replicas, and when the hub returned the marker path took minutes longer
+	// to settle than the outage itself.
+	lastAuthFailure atomic.Int64
 
 	// informerCancel stops the current Lease informer; the observation watchdog uses
 	// it to rebuild a wedged informer without restarting the process.
@@ -91,29 +102,58 @@ type Agent struct {
 // restart is what picks up a rotated one.
 const HealthStaleAfter = 90 * time.Second
 
-// Healthy reports whether this agent replica is doing its job, judged by role.
+// Healthy reports whether restarting this replica could make anything better.
+// That is the ONLY question a liveness probe answers; "the hub is down" is not a
+// pod defect and a restart does not bring the hub back.
 //
-// The WRITER is judged by hub-write freshness: it must have successfully written to
-// the coordination control plane within HealthStaleAfter. This exists because the
-// addon's health prober is deployment availability, so an agent that was running but
-// could not talk to the control plane at all still reported Available=True. Observed
-// live: after a control-plane rebuild minted a new CA, all three agents failed every
-// call with "x509: certificate signed by unknown authority" for ~35 minutes while
-// every ManagedClusterAddOn reported healthy, and none of them ever restarted
-// (restarts=0), so nothing surfaced the outage and nothing reloaded the credential.
-// Failing the probe fixes both halves: the addon reports the truth, and the kubelet
-// restarts the pod, which re-reads the mounted kubeconfig.
+// The WRITER fails the probe only when BOTH hold: its hub writes have not
+// succeeded within HealthStaleAfter, AND the recent failures are
+// credential-class (x509, unauthorized, invalid token). Then a restart genuinely
+// helps: it re-reads the mounted kubeconfig Secret. This preserves the fix for
+// the live incident where a control-plane rebuild minted a new CA and all three
+// agents failed every call with "x509: certificate signed by unknown authority"
+// for ~35 minutes without anything restarting them or reloading the credential.
+// Plain unreachability (connection refused, timeouts) keeps the pod alive: the
+// fence already protects the databases, the elector and watchdog keep retrying,
+// and restarting the writer on every probe window was observed live to bounce
+// the writer role between replicas for the whole outage and delay marker
+// recovery past the outage itself.
 //
-// A NON-WRITER never writes to the hub by design, so hub-write freshness would
-// restart it every probe cycle forever. Its job is to stay a hot standby: healthy
-// once its hub Lease observation is live. If its spoke API is unreachable it cannot
-// win the writer election anyway, and a restart would not change that.
+// A NON-WRITER never writes to the hub by design, so it is always healthy while
+// the process runs. If its credentials are rotten it will restart on its first
+// promotion to writer, which is exactly when the credential starts mattering.
 func (a *Agent) Healthy() bool {
 	if !a.isWriter.Load() {
-		return a.observationSynced.Load()
+		return true
 	}
 	last := a.lastHealthOK.Load()
-	return last != 0 && time.Since(time.Unix(0, last)) <= HealthStaleAfter
+	if last != 0 && time.Since(time.Unix(0, last)) <= HealthStaleAfter {
+		return true
+	}
+	authFail := a.lastAuthFailure.Load()
+	return authFail == 0 || time.Since(time.Unix(0, authFail)) > HealthStaleAfter
+}
+
+// noteAuthFailure records a credential-class hub write failure.
+func (a *Agent) noteAuthFailure() { a.lastAuthFailure.Store(time.Now().UnixNano()) }
+
+// credentialClassError reports whether err smells like a credential problem that a
+// pod restart (re-reading the mounted kubeconfig) could fix, as opposed to plain
+// unreachability, which it cannot.
+func credentialClassError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range []string{
+		"x509:", "certificate", "Unauthorized", "unauthorized",
+		"invalid bearer token", "credentials", "Forbidden", "forbidden",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteHealthOK records a successful coordination-plane write.

@@ -17,81 +17,101 @@ limitations under the License.
 package agent
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
 
-// TestWriterHealthyReflectsCoordinationPlaneReachability pins the fix for the live
-// failure where all three agents were unable to reach a rebuilt control plane for ~35
-// minutes (every call failing x509) while every ManagedClusterAddOn still reported
-// Available=True and no pod ever restarted. The WRITER replica is judged by hub-write
-// freshness.
-func TestWriterHealthyReflectsCoordinationPlaneReachability(t *testing.T) {
+// TestWriterRestartsOnlyForCredentialFailures pins the liveness contract: the probe
+// answers "could a restart help", not "is the hub up". It preserves the fix for the
+// live x509 incident (a control-plane rebuild minted a new CA, all agents failed
+// every call for ~35 minutes, nothing restarted, nothing reloaded the credential)
+// while fixing the opposite live incident (2026-08-07: failing the probe on plain
+// unreachability bounced the writer role between replicas for a whole hub outage
+// and delayed marker recovery past the outage itself).
+func TestWriterRestartsOnlyForCredentialFailures(t *testing.T) {
 	a := &Agent{}
 	a.isWriter.Store(true)
 
-	// Never renewed: unhealthy. A fresh Agent from New() is seeded, but the zero value
-	// must not read as healthy.
-	if a.Healthy() {
-		t.Fatal("a writer that has never reached the control plane must not be healthy")
-	}
-
+	// Fresh hub writes: healthy regardless of anything else.
 	a.noteHealthOK()
 	if !a.Healthy() {
-		t.Fatal("a just-succeeded renewal must be healthy")
+		t.Fatal("a writer with fresh hub writes must be healthy")
 	}
 
-	// Just inside the window stays healthy, so a transient blip never restarts a pod.
-	a.lastHealthOK.Store(time.Now().Add(-(HealthStaleAfter - 10*time.Second)).UnixNano())
+	// Stale writes with NO credential failures = the hub is unreachable. A restart
+	// cannot help; the fence protects the databases; stay alive and keep retrying.
+	a.lastHealthOK.Store(time.Now().Add(-(HealthStaleAfter + time.Minute)).UnixNano())
 	if !a.Healthy() {
-		t.Fatalf("within %s of a success must still be healthy", HealthStaleAfter)
+		t.Fatal("plain hub unreachability must not restart the writer")
 	}
 
-	// Sustained failure past the window is what the liveness probe should catch.
-	a.lastHealthOK.Store(time.Now().Add(-(HealthStaleAfter + time.Second)).UnixNano())
+	// Stale writes AND recent credential-class failures: a restart re-reads the
+	// mounted kubeconfig, so fail the probe.
+	a.noteAuthFailure()
 	if a.Healthy() {
-		t.Fatalf("no successful write for longer than %s must report unhealthy", HealthStaleAfter)
+		t.Fatal("stale writes with credential-class failures must fail the probe")
+	}
+
+	// Old credential failures no longer matter once they stop occurring.
+	a.lastAuthFailure.Store(time.Now().Add(-(HealthStaleAfter + time.Minute)).UnixNano())
+	if !a.Healthy() {
+		t.Fatal("stale credential failures older than the window must not keep failing the probe")
 	}
 }
 
-// TestNonWriterHealthyReflectsObservation pins the standby side of the role-aware
-// probe: a non-writer never writes to the hub BY DESIGN, so judging it by hub-write
-// freshness would restart the hot standby forever. Its job is a live view of the hub,
-// so it is healthy exactly when its Lease observation has synced.
-func TestNonWriterHealthyReflectsObservation(t *testing.T) {
+// TestNonWriterAlwaysHealthy pins the standby contract: a non-writer never writes to
+// the hub by design, so no hub condition may restart it. Rotten credentials surface
+// on its first promotion to writer, which is when they start mattering.
+func TestNonWriterAlwaysHealthy(t *testing.T) {
 	a := New(Options{}, nil, nil, nil)
-
-	if a.Healthy() {
-		t.Fatal("a non-writer whose hub observation has not synced must not be healthy")
-	}
-	a.observationSynced.Store(true)
 	if !a.Healthy() {
-		t.Fatal("a non-writer with a synced hub observation is a healthy hot standby")
+		t.Fatal("a standby must be healthy while the process runs")
 	}
-	// Hub-write staleness must NOT matter for a non-writer.
-	a.lastHealthOK.Store(time.Now().Add(-(HealthStaleAfter * 10)).UnixNano())
+	a.lastHealthOK.Store(time.Now().Add(-time.Hour).UnixNano())
+	a.noteAuthFailure()
 	if !a.Healthy() {
-		t.Fatal("hub-write freshness must not be applied to a replica that is not allowed to write")
+		t.Fatal("no hub condition may restart a replica that is not allowed to write")
 	}
 }
 
 // TestWriterPromotionReseedsHealthWindow pins the transition hazard: a replica that
-// was a standby for hours flips to writer semantics the moment it wins the election,
-// and its lastHealthOK clock started long ago. writerRunnable re-seeds the window
-// before flipping the role so a brand-new writer is not instantly probe-killed; this
-// test pins the invariant the re-seed provides.
+// was a standby for hours flips to writer semantics the moment it wins the election.
+// writerRunnable re-seeds the window before flipping the role so a brand-new writer
+// starts inside it even if credential failures follow immediately.
 func TestWriterPromotionReseedsHealthWindow(t *testing.T) {
 	a := New(Options{}, nil, nil, nil)
-	a.observationSynced.Store(true)
-	// Standby for a long time: hub-write clock is ancient, standby is healthy.
 	a.lastHealthOK.Store(time.Now().Add(-time.Hour).UnixNano())
-	if !a.Healthy() {
-		t.Fatal("long-lived standby must be healthy")
-	}
+	a.noteAuthFailure()
+
 	// The promotion sequence: re-seed FIRST, then flip the role.
 	a.noteHealthOK()
 	a.isWriter.Store(true)
 	if !a.Healthy() {
 		t.Fatal("a freshly promoted writer must start inside the health window")
+	}
+}
+
+// TestCredentialClassError pins the classifier's split: credential problems restart,
+// unreachability does not.
+func TestCredentialClassError(t *testing.T) {
+	for _, err := range []error{
+		errors.New("x509: certificate signed by unknown authority"),
+		errors.New("Unauthorized"),
+		errors.New("invalid bearer token"),
+	} {
+		if !credentialClassError(err) {
+			t.Fatalf("%v must classify as credential-class", err)
+		}
+	}
+	for _, err := range []error{
+		nil,
+		errors.New("dial tcp 10.2.0.239:9443: connect: connection refused"),
+		errors.New("dial tcp 10.2.0.239:9443: i/o timeout"),
+		errors.New(`Operation cannot be fulfilled on leases.coordination.k8s.io "primary-dc": the object has been modified`),
+	} {
+		if credentialClassError(err) {
+			t.Fatalf("%v must NOT classify as credential-class", err)
+		}
 	}
 }
