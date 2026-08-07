@@ -47,7 +47,7 @@ endif
 ### These variables should not need tweaking.
 ###
 
-SRC_PKGS := pkg
+SRC_PKGS := pkg ocm
 SRC_DIRS := $(SRC_PKGS) cmd # directories which hold app source (not vendored)
 
 DOCKER_PLATFORMS := linux/amd64 linux/arm64

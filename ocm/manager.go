@@ -29,6 +29,10 @@ import (
 	"os"
 	"time"
 
+	"open-cluster-management.io/addon-framework/pkg/addonfactory"
+	"open-cluster-management.io/addon-framework/pkg/addonmanager"
+	"open-cluster-management.io/addon-framework/pkg/agent"
+	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"open-cluster-management.io/dr-controlplane/ocm/secretfs"
 
 	cert "gomodules.xyz/cert"
@@ -39,9 +43,6 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	cu "kmodules.xyz/client-go/client"
-	"open-cluster-management.io/addon-framework/pkg/addonfactory"
-	"open-cluster-management.io/addon-framework/pkg/addonmanager"
-	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -89,8 +90,9 @@ func controlPlaneNamespace() string {
 
 // RunManagerController starts the hub manager and the OCM addon manager. It runs
 // in cluster on the OCM hub. The addon manager reconciles a HelmAgentAddon that
-// renders the embedded dr-controlplane-agent chart per ManagedCluster.
-func RunManagerController() error {
+// renders the embedded dr-controlplane-agent chart per ManagedCluster, using the
+// agent tunables in opts.
+func RunManagerController(opts AgentOptions) error {
 	kubeConfig, err := restclient.InClusterConfig()
 	if err != nil {
 		return err
@@ -143,14 +145,70 @@ func RunManagerController() error {
 		os.Exit(1)
 	}
 
-	agent, err := addonfactory.NewAgentAddonFactory(AddonName, FS, "manifests/dr-controlplane-agent").
+	klog.InfoS("starting addon manager",
+		"addon", AddonName,
+		"agentInstallNamespace", opts.InstallNamespace,
+		"agentImage", opts.ImageRepository,
+		"agentImageTag", opts.ImageTag,
+		"agentImagePullSecrets", opts.ImagePullSecrets,
+		"electionLeaseDuration", opts.ElectionLeaseDuration,
+		"markerFenceTTL", markerFenceTTL,
+	)
+
+	agentAddon, err := addonfactory.NewAgentAddonFactory(AddonName, FS, "manifests/dr-controlplane-agent").
 		WithScheme(scheme).
-		WithGetValuesFuncs(getValues(kubeConfig, cs)).
+		// Pin the agent install namespace. Without this the addon-framework uses
+		// ManagedClusterAddOn.Spec.InstallNamespace, which the CRD always defaults
+		// to open-cluster-management-agent-addon, where the coordination
+		// credential Secret does not exist.
+		//
+		// NOTE, known cosmetic discrepancy: `kubectl get managedclusteraddon
+		// dr-controlplane -n <dc> -o yaml` reports
+		// spec.installNamespace: open-cluster-management-agent-addon even though the
+		// agent correctly runs in dc-failover. That field is just the CRD default and
+		// nothing writes it back; the namespace used at render time is the one returned
+		// here, and it wins. Only the CR field is wrong, never the placement.
+		//
+		// Making the field agree would mean shipping an AddOnDeploymentConfig with
+		// spec.agentInstallNamespace and referencing it from the ClusterManagementAddOn
+		// (supportedConfigs + defaultConfigs), then sourcing the namespace via
+		// utils.AgentInstallNamespaceFromDeploymentConfigFunc. That is deliberately NOT
+		// done: that helper returns an empty namespace both when no config is attached
+		// and when the config exists but has not yet landed in the ManagedClusterAddOn
+		// status config references, and the framework cannot tell those apart (its own
+		// TODO). During the first reconcile after an upgrade that empty value decides
+		// where the agent is rendered, and an agent that lands anywhere other than
+		// dc-failover cannot mount coord-kubeconfig, never starts, and stops refreshing
+		// the active DC marker, which fails the databases closed to read only within
+		// the 30s marker TTL. Trading a live write outage for a cosmetic field is a bad
+		// deal, so the discrepancy stays documented instead.
+		WithAgentInstallNamespace(agentInstallNamespace(opts)).
+		// Report addon health from the agent Deployment's own availability instead of
+		// the framework default, which is a Lease prober: it looks for a Lease named
+		// after the addon, written by the agent into its install namespace on the
+		// spoke. This agent never writes that Lease (it maintains dc-health-<dc> in the
+		// coordination apiserver, which OCM knows nothing about), so every
+		// ManagedClusterAddOn sat at Available=Unknown /
+		// ManagedClusterAddOnLeaseNotFound forever even with the agent running 1/1.
+		//
+		// DeploymentAvailability is the right variant here because the agent Deployment
+		// is named per cluster (dr-controlplane-agent-<managedcluster>): the framework
+		// renders this addon's manifests for each ManagedCluster and derives the probe
+		// identifier from the rendered Deployment, so it resolves the real name and
+		// namespace per cluster. A static ResourceIdentifier list could not express
+		// that, and the wildcard alternative (utils.NewAllDeploymentsProber) is doubly
+		// unusable: its health check hard fails on len(results) < 2 while this addon
+		// ships exactly one Deployment, and it would depend on wildcard manifestConfig
+		// support in whatever work agent version each spoke happens to run.
+		WithAgentHealthProber(&agent.HealthProber{
+			Type: agent.HealthProberTypeDeploymentAvailability,
+		}).
+		WithGetValuesFuncs(getValues(opts, kubeConfig, cs)).
 		BuildHelmAgentAddon()
 	if err != nil {
 		return fmt.Errorf("unable to build agent addon: %w", err)
 	}
-	if err := addonMgr.AddAgent(agent); err != nil {
+	if err := addonMgr.AddAgent(agentAddon); err != nil {
 		return fmt.Errorf("unable to add agent to addon manager: %w", err)
 	}
 
@@ -159,5 +217,9 @@ func RunManagerController() error {
 			klog.ErrorS(err, "OCM addon manager exited")
 		}
 	}()
+	// Keep the operator's own copy of the coordination credential current. See
+	// runCoordKubeconfigMirror: the addon reaches every managed cluster, but not the hub
+	// namespace the KubeDB operator mounts from.
+	go runCoordKubeconfigMirror(context.Background(), opts, kubeConfig)
 	return hubManager.Start(context.Background())
 }

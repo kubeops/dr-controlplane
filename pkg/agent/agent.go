@@ -22,6 +22,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"open-cluster-management.io/dr-controlplane/pkg/leases"
@@ -45,7 +46,40 @@ type Agent struct {
 	electors    map[string]*scopeElector // keyed by primary Lease name
 	holders     map[string]markerState   // keyed by primary Lease name
 	standbyHold map[string]bool          // keyed by primary Lease name, see standbyhold.go
+
+	// lastHealthOK is the UnixNano of the last SUCCESSFUL health Lease renewal, i.e. the
+	// last time this agent could actually reach the coordination control plane. Seeded at
+	// construction so process startup is covered by the same staleness window.
+	lastHealthOK atomic.Int64
 }
+
+// HealthStaleAfter is how long an agent may go without a successful coordination-plane
+// write before /healthz starts failing.
+//
+// Deliberately generous: this drives a liveness probe, so it must ignore transient API
+// blips and fire only on a SUSTAINED inability to reach the control plane. That is the
+// case worth restarting for, because the credential is mounted from a Secret and a
+// restart is what picks up a rotated one.
+const HealthStaleAfter = 90 * time.Second
+
+// Healthy reports whether this agent has successfully written to the coordination control
+// plane recently enough.
+//
+// This exists because the addon's health prober is deployment availability, so an agent
+// that was running but could not talk to the control plane at all still reported
+// Available=True. Observed live: after a control-plane rebuild minted a new CA, all three
+// agents failed every call with "x509: certificate signed by unknown authority" for ~35
+// minutes while every ManagedClusterAddOn reported healthy, and none of them ever
+// restarted (restarts=0), so nothing surfaced the outage and nothing reloaded the
+// credential. Failing the probe fixes both halves: the addon reports the truth, and the
+// kubelet restarts the pod, which re-reads the mounted kubeconfig.
+func (a *Agent) Healthy() bool {
+	last := a.lastHealthOK.Load()
+	return last != 0 && time.Since(time.Unix(0, last)) <= HealthStaleAfter
+}
+
+// noteHealthOK records a successful coordination-plane write.
+func (a *Agent) noteHealthOK() { a.lastHealthOK.Store(time.Now().UnixNano()) }
 
 // markerState is the per scope value the projector writes to the spoke: which DC
 // the quorum trusts, the Lease renewTime that proves the view is current, and the
@@ -58,7 +92,7 @@ type markerState struct {
 
 // New builds an Agent.
 func New(opts Options, cs kubernetes.Interface, metrics *Metrics) *Agent {
-	return &Agent{
+	a := &Agent{
 		opts:        opts,
 		cs:          cs,
 		metrics:     metrics,
@@ -66,6 +100,8 @@ func New(opts Options, cs kubernetes.Interface, metrics *Metrics) *Agent {
 		holders:     map[string]markerState{},
 		standbyHold: map[string]bool{},
 	}
+	a.noteHealthOK()
+	return a
 }
 
 // Run starts the health renewer and the Lease informer, then blocks until ctx is done.
@@ -160,6 +196,16 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 
 	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold)
 	a.electorFor(scope, l.Name).setDesired(contend)
+
+	// A coordinated handoff is the only path that actively moves the Lease: the
+	// holder steps aside by releasing it exactly once, after its elector has been
+	// paused just above (desiredContend is false for the holder while a handoff
+	// to another Member is pending). Nothing else releases, ever; on every other
+	// path (agent restarts, member changes, override or standby holds) the Lease
+	// moves only by expiring after the holder stops renewing it.
+	if handoffTo != "" && handoffTargetIsMember && handoffTo != a.opts.DCName && holder == a.opts.DCName {
+		a.releaseForHandoff(a.rootCtx, l.Name, handoffTo)
+	}
 
 	// Record the holder and the Lease renewTime for the projector. Tying the marker
 	// freshness to the Lease renewTime makes the fence fail closed: if this agent is

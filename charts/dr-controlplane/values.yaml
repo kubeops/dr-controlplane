@@ -32,6 +32,43 @@ etcd:
   # cross DC latency does not trigger spurious etcd elections.
   heartbeatIntervalMs: 500
   electionTimeoutMs: 5000
+  # ---------------------------------------------------------------------------
+  # Cross data center member mode: the topology the DC-DR design actually calls
+  # for, one etcd member per data center so the failover authority survives
+  # losing a site.
+  #
+  # Set member.name to switch this release from the single cluster StatefulSet
+  # above to ONE member for THIS data center, advertising a routable address.
+  # Install once per DC with a distinct name/advertiseHost and the SAME peers
+  # list everywhere, for example:
+  #
+  #   dc-a:  --set etcd.member.name=dc-a --set etcd.member.advertiseHost=10.2.0.233
+  #   dc-b:  --set etcd.member.name=dc-b --set etcd.member.advertiseHost=10.2.0.236
+  #   dc-c:  --set etcd.member.name=dc-c --set etcd.member.advertiseHost=10.2.0.239
+  #   all:   --set 'etcd.peers={dc-a=http://10.2.0.233:2380,dc-b=http://10.2.0.236:2380,dc-c=http://10.2.0.239:2380}'
+  #
+  # The in-cluster StatefulSet cannot express this: its members find each other
+  # through cluster-local DNS, which does not resolve from another cluster.
+  member:
+    # Empty keeps the single cluster StatefulSet (dev and test). Set to this data
+    # center's name to deploy the one member that belongs here.
+    name: ""
+    # Routable address other data centers reach this member on. Required when
+    # name is set. With hostNetwork this is the node's own IP.
+    advertiseHost: ""
+    clientPort: 2379
+    peerPort: 2380
+    # hostNetwork gives the member a routable address without needing a
+    # LoadBalancer per DC, which is how the reference deployment does it.
+    hostNetwork: true
+    # Data lives on the node, so the member keeps its identity across restarts.
+    hostPath: /var/lib/dr-etcd
+  # The full --initial-cluster every member must agree on, as
+  # "<name>=http://<host>:<peerPort>" entries. Required when member.name is set.
+  peers: []
+  # "new" when bootstrapping the quorum, "existing" when joining one that is
+  # already running.
+  initialClusterState: new
   # Used when deploy=false. The endpoints of an external three DC etcd cluster.
   externalEndpoints: []
   #  - https://etcd-dc-a.example.com:2379
@@ -62,6 +99,11 @@ controlplane:
   # serving and client certs, with keys ca.crt and ca.key. Required off OpenShift:
   # without it the control plane tries to reuse an OpenShift cluster CA and fails.
   apiserverCASecret: ""
+  # Let the chart mint the apiserver CA when the Secret named above does not already
+  # exist, removing the manual openssl prerequisite. An EXISTING Secret is always
+  # reused: regenerating this CA would break every distributed coordination kubeconfig
+  # at once. Set false to keep providing it yourself.
+  generateApiserverCA: true
   # Persist the apiserver data directory (/.ocm), which holds the self minted
   # server-ca, client-ca, request-header-ca, and every issued cert, on a small
   # durable PVC. Without this the data dir is an emptyDir, so any pod restart mints
@@ -70,12 +112,22 @@ controlplane:
   # the first boot generates the CAs into it and they persist thereafter, so a pod
   # loss no longer changes the CA. Requires replicas 1 (the PVC is ReadWriteOnce and
   # a single CA must be served); highly available multi replica CA sharing is a
-  # separate concern. Strongly recommended for any real deployment.
+  # separate concern.
+  #
+  # Defaults to ENABLED: an emptyDir data dir silently destroys the CA on the first
+  # restart and fails the whole DC failover service closed, so opting out has to be
+  # a deliberate act (single run test clusters only).
   persistence:
-    enabled: false
+    enabled: true
+    # Mount a PVC this chart does not create or own. When set, no PVC is rendered
+    # and the control plane Deployment mounts this claim by name. Use it when the
+    # volume is provisioned out of band and must outlive the release.
+    existingClaim: ""
     size: 1Gi
     storageClassName: ""     # "" uses the cluster default storage class
-    accessMode: ReadWriteOnce
+    # List form. The older singular accessMode is still honored when this is unset.
+    accessModes:
+      - ReadWriteOnce
   service:
     # ClusterIP for in cluster, or LoadBalancer to expose the single front endpoint.
     type: ClusterIP
@@ -95,10 +147,20 @@ agent:
   health:
     leaseDurationSeconds: 15
     renewIntervalSeconds: 5
+  # Primary DC leader election. These are the live production values (45s/40s/5s).
+  #
+  # SAFETY CONSTRAINT, do not lower election.leaseDurationSeconds below 30:
+  # the agent projects an active DC marker ConfigMap that the database data plane
+  # (pg-coordinator) reads with a 30 SECOND fail closed TTL. A partitioned primary
+  # DC keeps accepting writes until its marker goes stale at lastRenew+30s, while a
+  # survivor can acquire the expired primary DC Lease at
+  # lastRenew+leaseDurationSeconds. With leaseDurationSeconds <= 30 the survivor
+  # becomes writable before the old primary has fenced itself, so two data centers
+  # accept writes at once. Keep it comfortably above 30s to absorb clock skew too.
   election:
-    leaseDurationSeconds: 15
-    renewDeadlineSeconds: 10
-    retryPeriodSeconds: 2
+    leaseDurationSeconds: 45
+    renewDeadlineSeconds: 40
+    retryPeriodSeconds: 5
   resources: {}
 
 # ----------------------------------------------------------------------------
@@ -107,13 +169,124 @@ agent:
 # ----------------------------------------------------------------------------
 topology:
   enabled: true
-  requireSpread: true
+  # requireSpread refuses to manage a scope that does not span at least three
+  # failure domains. Defaults OFF: the supported two-site topology deliberately
+  # spans only two clusters and places the third quorum vote as a second etcd
+  # member on the DR site, which this check cannot see. Turn it on only for
+  # deployments that really do have three or more clusters per scope.
+  requireSpread: false
   hubKubeconfigSecret: ""    # key: kubeconfig. Empty uses in cluster (hub).
   coordKubeconfigSecret: ""  # key: kubeconfig. Empty falls back to the hub config.
   # Static cluster to region mapping for spread validation, for example:
   # regions: { dc-a: us-east-1, dc-b: us-west-2, dc-c: eu-west-1 }
   regions: {}
   resources: {}
+
+# ----------------------------------------------------------------------------
+# addon: the OCM addon-framework integration. When autoInstall is enabled, the
+# hub runs an addon-manager that installs the per DC agent onto every
+# ManagedCluster selected by the Placement, replacing the manual per DC helm
+# install of the agent. This drives a ClusterManagementAddOn whose install
+# strategy is a Placement over a ManagedClusterSet.
+# ----------------------------------------------------------------------------
+addon:
+  autoInstall:
+    # Master switch. When false, none of the addon resources (addon-manager
+    # Deployment and RBAC, ClusterManagementAddOn, Placement, and
+    # ManagedClusterSetBinding) are rendered.
+    enabled: true
+  # ManagedClusterSet the Placement selects from. The built in "global" set
+  # contains every ManagedCluster, so the default installs the agent everywhere.
+  clusterSet: global
+  # Hub namespaces that also get a copy of the coordination kubeconfig. The KubeDB
+  # operator mounts it from its own namespace, which no addon manifest reaches, so
+  # without this it is the one credential left to create (and re-create after a CA
+  # rotation) by hand. The operator still needs a restart to re-read a rotated file.
+  coordKubeconfigMirrorNamespaces:
+    - kubedb
+  # Namespace for the Placement and ManagedClusterSetBinding. Empty defaults to
+  # the release namespace (.Values.namespace).
+  placementNamespace: ""
+  # Scope which clusters in the set actually get the agent. Both fields are empty
+  # by default, which keeps the historical behaviour: every cluster in clusterSet
+  # is selected. Set either one to stage a rollout onto specific clusters.
+  placement:
+    # Raw passthrough into Placement .spec.predicates. Use this for anything the
+    # Placement API supports (claim selectors, celExpressions, ...), for example:
+    # predicates:
+    #   - requiredClusterSelector:
+    #       labelSelector:
+    #         matchExpressions:
+    #           - key: dr-controlplane.io/dc
+    #             operator: Exists
+    predicates: []
+    # Convenience shortcut, only used when predicates is empty. Rendered as a
+    # single requiredClusterSelector over ManagedCluster labels, for example:
+    # labelSelector:
+    #   matchLabels:
+    #     dr-controlplane.io/enabled: "true"
+    labelSelector: {}
+  # ----------------------------------------------------------------------------
+  # agent: the spoke side agent the addon-manager renders onto every selected
+  # ManagedCluster. Each field below becomes an --agent-* flag on the addon-manager
+  # Deployment, which injects it into the embedded agent chart. This is the single
+  # path for every agent tunable; nothing is hardcoded per cluster.
+  # ----------------------------------------------------------------------------
+  agent:
+    # Namespace on each managed cluster the agent is installed into. It MUST be the
+    # namespace that already holds coordKubeconfigSecret, otherwise the agent pod
+    # never leaves ContainerCreating. This overrides the addon-framework default
+    # (open-cluster-management-agent-addon).
+    installNamespace: dc-failover
+    # Let the addon create and own installNamespace. Leave false: the namespace is
+    # shared with the coordination credential, the markers and sometimes etcd, and
+    # an owned namespace is deleted (with everything in it) when the addon is.
+    createNamespace: false
+    # Secret (key: kubeconfig) in installNamespace on each spoke holding the
+    # coordination control plane credential. Empty uses the spoke in cluster config.
+    coordKubeconfigSecret: coord-kubeconfig
+    # replicas per spoke; extras are pod crash insurance only (no quorum weight).
+    replicas: 1
+    # Secret on the HUB holding the coordination kubeconfig the addon copies to every
+    # managed cluster, so the credential does not have to be applied per spoke by hand
+    # and survives a control plane CA rotation on its own.
+    coordKubeconfigSourceSecret: multicluster-controlplane-kubeconfig
+    # External URL agents reach the control plane on. Empty falls back to
+    # https://<controlplane.externalHostname>:<controlplane.port>. Set to "" on both to
+    # disable the copy and provision coord-kubeconfig yourself.
+    coordExternalEndpoint: ""
+    image:
+      # Empty falls back to the top level image.repository.
+      repository: ""
+      # Empty falls back to the top level image.tag, then .Chart.AppVersion.
+      tag: ""
+    # imagePullSecret NAMES (plain strings) for the agent Deployment. The Secrets
+    # must already exist in installNamespace on every managed cluster. Empty falls
+    # back to the names in the top level imagePullSecrets list.
+    imagePullSecrets: []
+    #  - regcred
+    health:
+      leaseDurationSeconds: 15
+      renewIntervalSeconds: 5
+    # See the agent.election comment above for the >= 30s split brain constraint.
+    # The addon-manager refuses to start with leaseDurationSeconds <= 30.
+    election:
+      leaseDurationSeconds: 45
+      renewDeadlineSeconds: 40
+      retryPeriodSeconds: 5
+  # The hub side addon-manager. It runs the addon-manager subcommand in cluster.
+  manager:
+    replicas: 1
+    image:
+      # Empty falls back to the top level image.repository.
+      repository: ""
+      # Empty falls back to the top level image.tag, then .Chart.AppVersion.
+      tag: ""
+      # Empty falls back to the top level image.pullPolicy.
+      pullPolicy: ""
+    # Extra args appended after the addon-manager subcommand.
+    args: []
+    resources: {}
 
 nodeSelector: {}
 tolerations: []

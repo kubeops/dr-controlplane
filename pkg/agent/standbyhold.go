@@ -150,12 +150,21 @@ func standbyHoldConflict(standbyActive, overrideActive, isHolder bool) bool {
 // every scope this agent currently tracks, and emits the state-change,
 // ignored-on-active, and conflict logs standbyHoldTransitionLog,
 // standbyHoldIgnoredOnActive, and standbyHoldConflict decide on. It never
-// writes anything, to the spoke ConfigMap or to the Lease; the actual
-// behavior change (a non-holder DC stops contending) happens the ordinary
-// way, the next time reconcile (agent.go) runs off a Lease informer event
-// and calls desiredContend with the cached value this function just wrote.
-// On the current holder, per A45, there is no behavior change to happen:
-// desiredContend ignores standby-hold there and the DC keeps contending.
+// writes to the spoke ConfigMap or to the Lease.
+//
+// On a TRANSITION it re-runs the scope's contention decision immediately,
+// against a freshly read Lease. Without that, the new cached value only took
+// effect the next time a Lease informer event happened to arrive, which is not
+// a bounded wait: a scope whose Lease is idle (nobody renewing, as right after
+// a coordinated handoff released it) delivers no events until the informer's
+// 10 minute resync. Observed live: clearing a standby-hold on a handoff TARGET
+// left that DC not contending while the Lease sat unheld with handoff-to still
+// naming it, so the handoff simply never completed and the scope had no
+// primary at all. Re-poking a Lease from outside does not reliably fix it
+// either, since an event that lands before this cache refresh is evaluated
+// against the STALE value, which is exactly the race that made the live repro
+// look intermittent. Deciding here, right where the value changes, removes the
+// ordering dependency entirely.
 func (a *Agent) reconcileStandbyHold(ctx context.Context, spoke kubernetes.Interface) {
 	a.mu.Lock()
 	snapshot := make(map[string]markerState, len(a.holders))
@@ -193,5 +202,29 @@ func (a *Agent) reconcileStandbyHold(ctx context.Context, spoke kubernetes.Inter
 			klog.ErrorS(nil, "DC-DR CONFLICT: both break glass override and standby-hold ConfigMaps are present on this DC for the same scope, they demand opposite outcomes, standby-hold takes precedence (fail safe: stay standby, never promote), a human must clear one of the two markers to resolve this",
 				"dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		}
+
+		// Act on the change now, do not wait for a Lease event that may never come.
+		if held || cleared {
+			a.reevaluateContention(ctx, name)
+		}
 	}
+}
+
+// reevaluateContention re-reads the scope's Lease and re-runs the ordinary
+// reconcile against it, so a locally observed change (a standby-hold appearing or
+// disappearing) takes effect without depending on an inbound informer event.
+//
+// It deliberately reuses reconcile rather than poking the elector directly: every
+// other input (membership, handoff target, override-hold, the holder itself) must
+// be re-read at the same moment, and reconcile is the single place that combines
+// them. A failed Get is simply skipped; the next tick retries, and the pre-existing
+// event path still applies.
+func (a *Agent) reevaluateContention(ctx context.Context, leaseName string) {
+	l, err := a.cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName, metav1.GetOptions{})
+	if err != nil {
+		klog.V(3).ErrorS(err, "standby-hold changed but the Lease could not be re-read; contention will be re-evaluated on the next event or tick",
+			"dcdr.dc", a.opts.DCName, "dcdr.scope", leaseName)
+		return
+	}
+	a.reconcile(l)
 }

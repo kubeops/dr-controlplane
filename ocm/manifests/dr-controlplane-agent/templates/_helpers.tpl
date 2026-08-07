@@ -18,3 +18,13 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- define "dr.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
+
+{{/*
+The namespace every rendered object lands in. addonInstallNamespace is a built in
+value the addon-framework sets to the effective addon install namespace and that
+getValuesFuncs cannot override, so prefer it and fall back to .Values.namespace
+for a standalone helm render.
+*/}}
+{{- define "dr.namespace" -}}
+{{- default .Values.namespace .Values.addonInstallNamespace -}}
+{{- end -}}

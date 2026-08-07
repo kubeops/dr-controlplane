@@ -60,9 +60,21 @@ func runAgent(ctx context.Context, opts agent.Options) error {
 	reg := prometheus.NewRegistry()
 	m := agent.NewMetrics(reg, opts.DCName)
 
+	a := agent.New(opts, cs, m)
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	// /healthz reports whether this agent can actually reach the coordination control
+	// plane, not merely whether the process is up. It used to answer "ok"
+	// unconditionally, which made an agent that could not talk to the control plane at
+	// all look perfectly healthy to the addon prober. See Agent.Healthy.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if !a.Healthy() {
+			http.Error(w, "coordination control plane unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
 	srv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -72,7 +84,6 @@ func runAgent(ctx context.Context, opts agent.Options) error {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	klog.InfoS("starting agent", "dc", opts.DCName, "namespace", opts.Namespace, "metricsAddr", opts.MetricsAddr)
-	a := agent.New(opts, cs, m)
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}

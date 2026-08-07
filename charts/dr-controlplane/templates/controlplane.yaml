@@ -139,8 +139,12 @@ spec:
       volumes:
         - name: data
           {{- if .Values.controlplane.persistence.enabled }}
+          # Claim name is resolved by the same helper the PVC template uses, so an
+          # externally managed persistence.existingClaim is mounted here even though
+          # the chart does not create it. See templates/controlplane-pvc.yaml for why
+          # persisting /.ocm is the default.
           persistentVolumeClaim:
-            claimName: {{ $name }}-data
+            claimName: {{ include "dr.controlplaneClaimName" . }}
           {{- else }}
           emptyDir: {}
           {{- end }}
@@ -157,30 +161,6 @@ spec:
           secret:
             secretName: {{ .Values.controlplane.apiserverCASecret }}
         {{- end }}
-{{- if .Values.controlplane.persistence.enabled }}
----
-# Durable home for the apiserver data dir (/.ocm) so the self minted server-ca,
-# client-ca, request-header-ca, and issued certs survive a pod restart. On first
-# boot the PVC is empty and the apiserver generates the CAs into it; every restart
-# after that reuses them, so a pod loss no longer breaks cross DC TLS trust.
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ $name }}-data
-  namespace: {{ $ns }}
-  labels:
-    {{- include "dr.labels" . | nindent 4 }}
-    app.kubernetes.io/component: controlplane
-spec:
-  accessModes:
-    - {{ .Values.controlplane.persistence.accessMode | default "ReadWriteOnce" }}
-  resources:
-    requests:
-      storage: {{ .Values.controlplane.persistence.size | default "1Gi" }}
-  {{- if .Values.controlplane.persistence.storageClassName }}
-  storageClassName: {{ .Values.controlplane.persistence.storageClassName | quote }}
-  {{- end }}
-{{- end }}
 ---
 apiVersion: v1
 kind: Service

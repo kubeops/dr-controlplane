@@ -1,4 +1,4 @@
-{{- $ns := .Values.namespace -}}
+{{- $ns := include "dr.namespace" . -}}
 {{- $dc := required "clusterName is required (injected by the addon manager from the ManagedCluster name)" .Values.clusterName -}}
 {{- $name := printf "%s-%s" (include "dr.fullname" .) $dc -}}
 apiVersion: v1
@@ -53,7 +53,7 @@ metadata:
     app.kubernetes.io/component: agent
     dr.open-cluster-management.io/dc: {{ $dc }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicas | default 1 }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "dr.name" . }}
@@ -92,6 +92,21 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ trimPrefix ":" .Values.agent.metricsAddr | int }}
+          # Liveness on the REAL signal: /healthz fails once this agent has been unable
+          # to write to the coordination control plane for HealthStaleAfter (90s), so a
+          # sustained outage restarts the pod instead of leaving it running-but-useless.
+          # That is what re-reads a rotated coordination kubeconfig from the mounted
+          # Secret, and what makes the addon's deployment-availability prober tell the
+          # truth. Thresholds are deliberately slack so transient API blips never restart
+          # a healthy agent.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ trimPrefix ":" .Values.agent.metricsAddr | int }}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           {{- if .Values.agent.coordKubeconfigSecret }}
           volumeMounts:
             - name: coord-kubeconfig

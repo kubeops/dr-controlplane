@@ -24,6 +24,7 @@ import (
 	"open-cluster-management.io/dr-controlplane/pkg/leases"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -56,6 +57,10 @@ type Controller struct {
 	regionOf func(string) string
 	// requireSpread refuses to manage a scope that does not span >= 3 failure domains.
 	requireSpread bool
+	// nsEnsured caches that the coordination namespace has been confirmed to exist, so
+	// the check costs one API call per process rather than one per resync. Only ever
+	// read/written from reconcile, which runs single threaded.
+	nsEnsured bool
 }
 
 // New builds a topology Controller. hub reads PlacementPolicies, coord writes Leases.
@@ -138,6 +143,12 @@ func (c *Controller) reconcile(ctx context.Context, lister cache.GenericLister) 
 	for _, e := range errs {
 		klog.ErrorS(e, "skipping invalid PlacementPolicy failover config")
 	}
+	if err := c.ensureNamespace(ctx); err != nil {
+		// Without the namespace every ensureLease below fails with "namespaces not
+		// found", so stop here and report once rather than once per scope.
+		klog.ErrorS(err, "failed to ensure the coordination namespace; cannot manage Leases", "namespace", c.ns)
+		return
+	}
 	for name, st := range topo.Scopes {
 		if c.requireSpread {
 			if err := st.ValidateSpread(c.regionOf); err != nil {
@@ -149,6 +160,41 @@ func (c *Controller) reconcile(ctx context.Context, lister cache.GenericLister) 
 			klog.ErrorS(err, "failed to ensure primary DC Lease", "lease", name)
 		}
 	}
+}
+
+// ensureNamespace makes sure the namespace that holds the Leases exists ON THE
+// COORDINATION CONTROL PLANE.
+//
+// That control plane is a separate apiserver with its own object store, so the namespace
+// the chart creates in the hosting cluster does not exist there. On a control plane built
+// against empty etcd (a first install, or any rebuild after losing it) the namespace is
+// simply absent, and every Lease write fails forever with:
+//
+//	failed to ensure primary DC Lease  err="namespaces \"dc-failover\" not found"
+//
+// which leaves the whole DR service inert: no primary DC Lease is ever created, so no
+// agent can hold one, so no data center is ever active. Observed live on a full rebuild.
+// Creating it here is idempotent and keeps the fix next to the only component that needs
+// it, rather than requiring an out of band kubectl against the control plane.
+func (c *Controller) ensureNamespace(ctx context.Context) error {
+	if c.nsEnsured {
+		return nil
+	}
+	if _, err := c.coord.CoreV1().Namespaces().Get(ctx, c.ns, metav1.GetOptions{}); err == nil {
+		c.nsEnsured = true
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	_, err := c.coord.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: c.ns},
+	}, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	klog.InfoS("created the coordination namespace on the control plane", "namespace", c.ns)
+	c.nsEnsured = true
+	return nil
 }
 
 // ensureLease creates or annotates the primary DC Lease without touching the

@@ -91,8 +91,18 @@ func (e *scopeElector) run(ctx context.Context) {
 		LockConfig: resourcelock.ResourceLockConfig{Identity: e.a.opts.DCName},
 	}
 	cfg := leaderelection.LeaderElectionConfig{
-		Lock:            lock,
-		ReleaseOnCancel: true,
+		Lock: lock,
+		// ReleaseOnCancel is deliberately false. Releasing on every elector stop
+		// turned routine agent lifecycle events (liveness restarts under control
+		// plane load, image rolls, SIGTERM at pod shutdown, contention pauses)
+		// into instant un-asked DC failovers: the release writes the Lease back
+		// with no holder and a one second duration, and a peer DC acquired it on
+		// its next two second retry tick. The identity here is the DC name, not
+		// the pod, so a restarted agent simply resumes renewing the Lease it
+		// already holds. The primary DC now moves in exactly two ways: the
+		// holder genuinely stops renewing and the Lease expires (real DC loss),
+		// or a coordinated handoff releases it once (releaseForHandoff).
+		ReleaseOnCancel: false,
 		LeaseDuration:   e.a.opts.Election.LeaseDuration,
 		RenewDeadline:   e.a.opts.Election.RenewDeadline,
 		RetryPeriod:     e.a.opts.Election.RetryPeriod,

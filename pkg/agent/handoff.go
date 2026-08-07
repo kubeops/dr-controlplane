@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"open-cluster-management.io/dr-controlplane/pkg/leases"
 
@@ -26,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 )
 
 // desiredContend decides whether this DC should actively contend for a scope's
@@ -63,8 +65,9 @@ import (
 //     vetoed it.
 //   - Normally (no pin, no hold) a Member contends.
 //   - During a handoff to another Member, a Member pauses so the target can
-//     acquire. If this DC currently holds the Lease, pausing releases it
-//     (ReleaseOnCancel).
+//     acquire. If this DC currently holds the Lease, the reconcile additionally
+//     releases it once via releaseForHandoff (elector stops never release on
+//     their own, see election.go).
 //   - The handoff target contends eagerly. Once the target holds the Lease the
 //     handoff is complete and everyone resumes normal contention.
 //   - A handoff whose target is not a Member (a stale annotation, or a Member
@@ -95,6 +98,38 @@ func holderOf(l *coordinationv1.Lease) string {
 		return ""
 	}
 	return *l.Spec.HolderIdentity
+}
+
+// releaseForHandoff steps this DC aside for a coordinated handoff by writing the
+// Lease back with no holder and a one second duration, the same record client-go's
+// release writes, so the handoff target acquires on its next retry tick instead of
+// waiting out the full lease duration. This is deliberately the ONLY active Lease
+// move in the whole service; every elector runs with ReleaseOnCancel disabled (see
+// election.go for the incident that forced this). The caller has already paused
+// this DC's elector, but a renew that was in flight when the elector stopped can
+// still land after this write and re-claim the Lease; that renew is itself a Lease
+// event, the reconcile re-runs, sees the handoff annotation still set and this DC
+// still the holder, and releases again, so the handoff converges within one event.
+func (a *Agent) releaseForHandoff(ctx context.Context, name, handoffTo string) {
+	cl := a.cs.CoordinationV1().Leases(a.opts.Namespace)
+	cur, err := cl.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		klog.V(3).ErrorS(err, "failed to read Lease for handoff release", "dcdr.scope", name)
+		return
+	}
+	if holderOf(cur) != a.opts.DCName {
+		return
+	}
+	now := metav1.NewMicroTime(time.Now())
+	cur.Spec.HolderIdentity = ptr.To("")
+	cur.Spec.LeaseDurationSeconds = ptr.To(int32(1))
+	cur.Spec.RenewTime = &now
+	cur.Spec.AcquireTime = &now
+	if _, err := cl.Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		klog.V(3).ErrorS(err, "failed to release Lease for handoff", "dcdr.scope", name)
+		return
+	}
+	klog.InfoS("released primary DC Lease for coordinated handoff", "dcdr.scope", name, "dcdr.dc", a.opts.DCName, "dcdr.handoffTo", handoffTo)
 }
 
 // clearHandoff removes the handoff annotation once the target holds the Lease.

@@ -1,6 +1,95 @@
 {{- if .Values.etcd.deploy }}
 {{- $svc := include "dr.etcdServiceName" . -}}
 {{- $ns := .Values.namespace -}}
+{{- $m := .Values.etcd.member -}}
+{{- if $m.name }}
+{{- /*
+Cross data center member mode: this release deploys ONE etcd member for THIS data
+center, advertising a ROUTABLE address, and joins the quorum described by etcd.peers.
+
+This is the mode the DC-DR design actually calls for: a three member quorum with one
+member per data center, so the failover authority survives losing a site. The in-cluster
+StatefulSet below cannot express that, because its peers address each other through
+cluster-local DNS (<pod>.<svc>.<ns>.svc), which does not resolve from another cluster.
+Before this mode existed the designed topology had to be hand rolled as bare hostNetwork
+pods outside the chart.
+
+Install once per data center with a distinct member.name and member.advertiseHost, and
+the same etcd.peers list everywhere.
+*/ -}}
+{{- if not $m.advertiseHost }}{{ fail "etcd.member.advertiseHost is required when etcd.member.name is set: peers in other clusters must be able to route to this member" }}{{- end }}
+{{- if not .Values.etcd.peers }}{{ fail "etcd.peers is required when etcd.member.name is set: it is the --initial-cluster every member must agree on" }}{{- end }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $svc }}-{{ $m.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "dr.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+    dr.open-cluster-management.io/etcd-member: {{ $m.name | quote }}
+spec:
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if $m.hostNetwork }}
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  {{- end }}
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: etcd
+      image: {{ .Values.etcd.image }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      ports:
+        - name: client
+          containerPort: {{ $m.clientPort }}
+          {{- if $m.hostNetwork }}
+          hostPort: {{ $m.clientPort }}
+          {{- end }}
+        - name: peer
+          containerPort: {{ $m.peerPort }}
+          {{- if $m.hostNetwork }}
+          hostPort: {{ $m.peerPort }}
+          {{- end }}
+      command:
+        - /usr/local/bin/etcd
+        - --name={{ $m.name }}
+        - --data-dir=/var/run/etcd/default.etcd
+        - --listen-peer-urls=http://0.0.0.0:{{ $m.peerPort }}
+        - --listen-client-urls=http://0.0.0.0:{{ $m.clientPort }}
+        - --advertise-client-urls=http://{{ $m.advertiseHost }}:{{ $m.clientPort }}
+        - --initial-advertise-peer-urls=http://{{ $m.advertiseHost }}:{{ $m.peerPort }}
+        - --initial-cluster={{ join "," .Values.etcd.peers }}
+        - --initial-cluster-state={{ .Values.etcd.initialClusterState }}
+        - --initial-cluster-token=dr-etcd
+        # WAN tuning: comfortably above the inter data center round trip time so cross DC
+        # latency does not trigger spurious etcd elections.
+        - --heartbeat-interval={{ .Values.etcd.heartbeatIntervalMs }}
+        - --election-timeout={{ .Values.etcd.electionTimeoutMs }}
+      volumeMounts:
+        - name: data
+          mountPath: /var/run/etcd
+  volumes:
+    - name: data
+      hostPath:
+        path: {{ $m.hostPath }}
+        type: DirectoryOrCreate
+{{- else }}
+{{- /*
+Single cluster mode, for dev and test ONLY. All replicas land in one cluster and address
+each other through cluster-local DNS, so they share a failure domain: losing that cluster
+loses the entire failover authority, which is the one thing the quorum exists to survive.
+Use etcd.member/etcd.peers (above) for anything real.
+*/ -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -46,7 +135,8 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # Spread the three members across failure domains (one per data center in production).
+      # Best effort spread, but note this cannot cross clusters: every replica is in this
+      # one cluster regardless. See the comment above.
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -98,4 +188,5 @@ spec:
         resources:
           requests:
             storage: {{ .Values.etcd.storageSize }}
+{{- end }}
 {{- end }}
