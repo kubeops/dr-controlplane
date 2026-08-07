@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func newCmdAgent() *cobra.Command {
@@ -48,6 +49,10 @@ func newCmdAgent() *cobra.Command {
 }
 
 func runAgent(ctx context.Context, opts agent.Options) error {
+	// The writer manager (controller-runtime) logs through logr; without this
+	// its first log attempt prints a "SetLogger was never called" stack trace.
+	ctrl.SetLogger(klog.NewKlogr())
+
 	cfg, err := opts.RESTConfig()
 	if err != nil {
 		return err
