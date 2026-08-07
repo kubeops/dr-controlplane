@@ -145,7 +145,8 @@ func RunManagerController(opts AgentOptions) error {
 		os.Exit(1)
 	}
 
-	klog.InfoS("starting addon manager",
+	klog.InfoS(
+		"starting addon manager",
 		"addon", AddonName,
 		"agentInstallNamespace", opts.InstallNamespace,
 		"agentImage", opts.ImageRepository,
