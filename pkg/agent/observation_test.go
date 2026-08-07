@@ -57,7 +57,7 @@ func TestObservationCheckRepairsStaleView(t *testing.T) {
 	// The informer's last delivery, long ago.
 	a.holders["primary-dc-d1drill"] = markerState{dc: "dc-a", renew: frozen}
 
-	stale, err := a.checkObservation(context.Background())
+	stale, err := a.checkObservation(context.Background(), false)
 	if err != nil {
 		t.Fatalf("checkObservation: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestObservationCheckQuietViewIsNotStale(t *testing.T) {
 	a.rootCtx = context.Background()
 	a.holders["primary-dc-idle"] = markerState{dc: "dc-a", renew: old}
 
-	stale, err := a.checkObservation(context.Background())
+	stale, err := a.checkObservation(context.Background(), false)
 	if err != nil {
 		t.Fatalf("checkObservation: %v", err)
 	}
@@ -105,11 +105,43 @@ func TestObservationCheckSmallDriftTolerated(t *testing.T) {
 	a.rootCtx = context.Background()
 	a.holders["primary-dc-d1drill"] = markerState{dc: "dc-a", renew: now.Add(-5 * time.Second)}
 
-	stale, err := a.checkObservation(context.Background())
+	stale, err := a.checkObservation(context.Background(), false)
 	if err != nil {
 		t.Fatalf("checkObservation: %v", err)
 	}
 	if stale {
 		t.Fatalf("%s of drift is ordinary latency and must be tolerated", 5*time.Second)
+	}
+}
+
+// TestForcedObservationStartsElectorsForInSyncLeases pins the writer cold-start
+// path: with force, every listed Lease goes through reconcile even when the
+// observed state is in perfect sync. Without this, a freshly promoted writer
+// starts zero electors for self-held scopes (their Leases emit no events once
+// the previous renewer is gone) and they freeze until the fence trips; observed
+// live on the bank pair, 2026-08-07. The fake here has no electors to observe
+// directly, so the test pins the observable contract: the holders entry is
+// rewritten even with zero drift, proving reconcile ran for the in-sync Lease.
+func TestForcedObservationStartsElectorsForInSyncLeases(t *testing.T) {
+	now := time.Now()
+	cs := fake.NewSimpleClientset(primaryLease("primary-dc-bankpg", "dr", now))
+	a := New(Options{DCName: "dr", Namespace: "dc-failover"}, cs, cs, nil)
+	a.rootCtx = context.Background()
+	// Perfectly in-sync observation, but with a sentinel quiesce value that only
+	// reconcile (reading the actual Lease) would clear.
+	a.holders["primary-dc-bankpg"] = markerState{dc: "dr", renew: now, quiesce: "sentinel"}
+
+	if _, err := a.checkObservation(context.Background(), false); err != nil {
+		t.Fatalf("checkObservation: %v", err)
+	}
+	if a.holders["primary-dc-bankpg"].quiesce != "sentinel" {
+		t.Fatal("without force, an in-sync lease must be skipped (this is the drift gate working)")
+	}
+
+	if _, err := a.checkObservation(context.Background(), true); err != nil {
+		t.Fatalf("checkObservation force: %v", err)
+	}
+	if a.holders["primary-dc-bankpg"].quiesce != "" {
+		t.Fatal("with force, reconcile must run for an in-sync lease (writer cold start depends on it)")
 	}
 }

@@ -86,7 +86,7 @@ func (a *Agent) runObservationWatchdog(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			stale, err := a.checkObservation(ctx)
+			stale, err := a.checkObservation(ctx, false)
 			if err != nil {
 				// Cannot List: the control plane is unreachable for the aux client
 				// too. That is the health renewer's territory (its Lease goes
@@ -122,7 +122,16 @@ func (a *Agent) runObservationWatchdog(ctx context.Context) {
 // checkObservation Lists the Leases and repairs any proven-stale observation by
 // running the ordinary reconcile path over the listed state. It reports whether
 // staleness was proven.
-func (a *Agent) checkObservation(ctx context.Context) (bool, error) {
+//
+// force reconciles EVERY listed Lease regardless of drift. The writer cold start
+// needs this: a freshly promoted writer's holders cache is typically in perfect
+// sync (the standby observed everything), yet none of its electors exist, and a
+// Lease this DC holds gets no informer events at all once its previous renewer
+// is gone, so waiting for drift or events means waiting forever. Observed live
+// on the bank pair (2026-08-07): after a clean agent roll the new writers
+// started zero electors, every self-held Lease froze at its last renewTime, and
+// the markers aged toward the fence TTL until the Leases were poked by hand.
+func (a *Agent) checkObservation(ctx context.Context, force bool) (bool, error) {
 	ls, err := a.aux.CoordinationV1().Leases(a.opts.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return false, err
@@ -138,6 +147,10 @@ func (a *Agent) checkObservation(ctx context.Context) (bool, error) {
 		a.mu.Lock()
 		observed, seen := a.holders[l.Name]
 		a.mu.Unlock()
+		if force {
+			a.reconcile(l)
+			continue
+		}
 		if seen && actual.Sub(observed.renew) <= ObservationStaleAfter {
 			continue
 		}

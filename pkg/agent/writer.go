@@ -132,10 +132,14 @@ func (w writerRunnable) Start(ctx context.Context) error {
 
 	// Elector cold start. While this pod was a non-writer, reconcile kept the
 	// holders cache warm but deliberately started no electors. Now that it may
-	// write, re-run the ordinary reconcile path over the actual Lease state so
-	// contention resumes; a direct List (the watchdog's own primitive) is used
-	// instead of waiting for the next informer event on every Lease.
-	if _, err := a.checkObservation(ctx); err != nil {
+	// write, run the ordinary reconcile path over EVERY listed Lease (force):
+	// a Lease this DC holds gets no informer events once its previous renewer
+	// is gone, and the holders cache being in perfect sync is exactly why a
+	// drift-gated pass would skip it, so only an unconditional pass revives
+	// contention for self-held scopes. Observed live on the bank pair: without
+	// force, a clean roll started zero electors and every self-held Lease
+	// froze until poked by hand.
+	if _, err := a.checkObservation(ctx, true); err != nil {
 		klog.ErrorS(err, "writer cold start: could not list Leases; electors resume on informer events")
 	}
 
