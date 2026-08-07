@@ -1,4 +1,14 @@
 {{- if .Values.controlplane.enabled }}
+{{- /*
+Two configurations that used to fail only at runtime, on a real cluster, with an error
+that did not name the cause. Both are caught here instead.
+*/ -}}
+{{- if and .Values.controlplane.persistence.enabled (not .Values.controlplane.persistence.existingClaim) (gt (int .Values.controlplane.replicas) 1) }}
+{{- fail "controlplane.replicas must be 1 when controlplane.persistence.enabled is true: the data dir PVC is ReadWriteOnce, so on EBS/Azure Disk the second replica can never attach it and sits Pending with a multi-attach error. Set controlplane.replicas=1, or supply a ReadWriteMany persistence.existingClaim." }}
+{{- end }}
+{{- if and (not .Values.controlplane.apiserverCASecret) (not (.Capabilities.APIVersions.Has "security.openshift.io/v1")) }}
+{{- fail "controlplane.apiserverCASecret is required off OpenShift: without it the control plane tries to borrow a cluster CA that does not exist and never becomes ready. Set it to a Secret name (with controlplane.generateApiserverCA=true the chart mints the CA into it on first install and reuses it thereafter)." }}
+{{- end }}
 {{- $ns := .Values.namespace -}}
 {{- $name := printf "%s-controlplane" (include "dr.fullname" .) -}}
 apiVersion: v1
