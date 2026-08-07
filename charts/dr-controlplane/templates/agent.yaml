@@ -54,7 +54,7 @@ metadata:
     app.kubernetes.io/component: agent
     dr.open-cluster-management.io/dc: {{ $dc }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.agent.replicas | default 1 }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "dr.name" . }}
@@ -68,6 +68,20 @@ spec:
         dr.open-cluster-management.io/dc: {{ $dc }}
     spec:
       serviceAccountName: {{ $name }}
+      # Soft anti-affinity: spread agent replicas across nodes when possible;
+      # a single-node cluster still gains pod-crash failover from a second
+      # replica (the spoke-local writer election picks the one that writes).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{ include "dr.name" . }}
+                    app.kubernetes.io/component: agent
+                    dr.open-cluster-management.io/dc: {{ $dc }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

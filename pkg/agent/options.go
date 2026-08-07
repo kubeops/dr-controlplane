@@ -63,6 +63,19 @@ type Options struct {
 	// be well under the fence TTL so a healthy marker always reads fresh.
 	MarkerRefreshInterval time.Duration
 
+	// WriterElection tunes the spoke-local election that picks THE ONE agent
+	// replica allowed to write: the marker ConfigMap, the hub scope Leases, the
+	// DC health Lease, and the break glass override annotations. The election
+	// Lease lives on the SPOKE (in MarkerNamespace), deliberately not on the
+	// coordination plane: a hub outage must never change which local pod holds
+	// the writer role, and holding the role must have the same failure domain
+	// as the writes it guards. Non-writer replicas keep their hub observation
+	// warm (informer, holders, watchdog) so takeover starts from a fresh view.
+	// Takeover after a writer crash is bounded by LeaseDuration, which must stay
+	// comfortably inside the pg-coordinator fence TTL (30s) so an agent pod
+	// death never fences a healthy DC.
+	WriterElection ElectionConfig
+
 	// ClientQPS and ClientBurst size the coordination-plane client's rate limiter.
 	// Every scope elector, the informer's relists, and the handoff writes share one
 	// client, so the limiter must be sized for the whole fleet of scopes, not for a
@@ -101,6 +114,11 @@ func DefaultOptions() Options {
 			RenewDeadline: 30 * time.Second,
 			RetryPeriod:   2 * time.Second,
 		},
+		WriterElection: ElectionConfig{
+			LeaseDuration: 15 * time.Second,
+			RenewDeadline: 10 * time.Second,
+			RetryPeriod:   2 * time.Second,
+		},
 		ClientQPS:   100,
 		ClientBurst: 200,
 	}
@@ -122,6 +140,9 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.MarkerRefreshInterval, "marker-refresh-interval", o.MarkerRefreshInterval, "How often the active DC marker renewTime is restamped (must be well under the fence TTL).")
 	fs.Float32Var(&o.ClientQPS, "client-qps", o.ClientQPS, "QPS for the coordination control plane client. Size for the whole scope fleet: electors, informer relists and handoffs share this budget.")
 	fs.IntVar(&o.ClientBurst, "client-burst", o.ClientBurst, "Burst for the coordination control plane client.")
+	fs.DurationVar(&o.WriterElection.LeaseDuration, "writer-lease-duration", o.WriterElection.LeaseDuration, "Spoke-local writer election Lease duration (bounds takeover after a writer pod crash; keep well under the 30s fence TTL).")
+	fs.DurationVar(&o.WriterElection.RenewDeadline, "writer-renew-deadline", o.WriterElection.RenewDeadline, "Spoke-local writer election renew deadline.")
+	fs.DurationVar(&o.WriterElection.RetryPeriod, "writer-retry-period", o.WriterElection.RetryPeriod, "Spoke-local writer election retry period.")
 }
 
 // Validate checks the options.
@@ -140,6 +161,12 @@ func (o Options) Validate() error {
 	}
 	if o.ClientQPS <= 0 || o.ClientBurst <= 0 {
 		return fmt.Errorf("client-qps and client-burst must be positive")
+	}
+	if o.WriterElection.RenewDeadline >= o.WriterElection.LeaseDuration {
+		return fmt.Errorf("writer-renew-deadline must be less than writer-lease-duration")
+	}
+	if o.WriterElection.RetryPeriod <= 0 || o.WriterElection.RetryPeriod >= o.WriterElection.RenewDeadline {
+		return fmt.Errorf("writer-retry-period must be positive and less than writer-renew-deadline")
 	}
 	return nil
 }

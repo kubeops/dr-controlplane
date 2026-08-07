@@ -22,10 +22,9 @@ import (
 
 	"open-cluster-management.io/dr-controlplane/pkg/leases"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
@@ -60,7 +59,7 @@ import (
 // "before the annotation lands", not "forever". Fully closing that window is
 // deferred to A43's two DC quorum rebuild live test phase with a real 3 member
 // etcd; it is not attempted here.
-func (a *Agent) reconcileOverrides(ctx context.Context, spoke kubernetes.Interface) {
+func (a *Agent) reconcileOverrides(ctx context.Context) {
 	a.mu.Lock()
 	snapshot := make(map[string]markerState, len(a.holders))
 	for k, v := range a.holders {
@@ -69,19 +68,20 @@ func (a *Agent) reconcileOverrides(ctx context.Context, spoke kubernetes.Interfa
 	a.mu.Unlock()
 
 	for name, st := range snapshot {
-		active := a.localOverrideActive(ctx, spoke, name)
-		a.reconcileOverrideHold(ctx, name, st.dc, active)
+		active := a.localOverrideActive(ctx, name)
+		a.reconcileOverrideHold(ctx, name, st.dc, st.overrideHold, active)
 	}
 }
 
 // localOverrideActive reports whether this DC's own spoke carries the break
-// glass override ConfigMap for scope leaseName. Get only, matching
-// pg-coordinator's breakGlassOverrideActive byte for byte in naming
-// (leases.OverrideConfigMapSuffix): presence is the signal, any error
-// (NotFound or otherwise) fails closed to "not active".
-func (a *Agent) localOverrideActive(ctx context.Context, spoke kubernetes.Interface, leaseName string) bool {
+// glass override ConfigMap for scope leaseName. Get only (through the writer
+// manager's cache), matching pg-coordinator's breakGlassOverrideActive byte for
+// byte in naming (leases.OverrideConfigMapSuffix): presence is the signal, any
+// error (NotFound or otherwise) fails closed to "not active".
+func (a *Agent) localOverrideActive(ctx context.Context, leaseName string) bool {
 	name := leaseName + leases.OverrideConfigMapSuffix
-	_, err := spoke.CoreV1().ConfigMaps(a.opts.MarkerNamespace).Get(ctx, name, metav1.GetOptions{})
+	var cm core.ConfigMap
+	err := a.spoke.Get(ctx, types.NamespacedName{Namespace: a.opts.MarkerNamespace, Name: name}, &cm)
 	return err == nil
 }
 
@@ -114,20 +114,15 @@ func overrideDecision(active bool, lastHolder, dc, current string) (want string,
 	return "", true
 }
 
-// reconcileOverrideHold reads the current override-hold annotation and applies
-// overrideDecision, patching the Lease only on a change. This is this agent's
-// ONLY write path to the annotation; the human's override ConfigMap itself is
-// never written (see localOverrideActive, Get only).
-func (a *Agent) reconcileOverrideHold(ctx context.Context, leaseName, lastHolder string, active bool) {
-	current, err := a.cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			klog.V(3).ErrorS(err, "override hold reconcile: cannot read primary DC Lease", "dcdr.dc", a.opts.DCName, "dcdr.scope", leaseName)
-		}
-		return
-	}
-	have := current.Annotations[leases.AnnOverrideHold]
-
+// reconcileOverrideHold applies overrideDecision against the OBSERVED
+// override-hold annotation (carried in markerState by the same informer feed
+// the holders come from), patching the Lease only on a change. Deciding from
+// the observed value instead of a per scope uncached hub Get keeps this
+// reconciler's read load at zero; the worst a stale observation can cause is a
+// redundant idempotent merge patch, which the next observation corrects. This
+// is this agent's ONLY write path to the annotation; the human's override
+// ConfigMap itself is never written (see localOverrideActive, Get only).
+func (a *Agent) reconcileOverrideHold(ctx context.Context, leaseName, lastHolder, have string, active bool) {
 	if active && lastHolder != a.opts.DCName {
 		klog.ErrorS(nil, "DC-DR BREAK GLASS override ConfigMap found on a spoke that is not this scope's last known primary DC; ignoring, refusing to pin the Lease to a DC that never held it",
 			"dcdr.dc", a.opts.DCName, "dcdr.scope", leaseName, "dcdr.lastKnownHolder", lastHolder)

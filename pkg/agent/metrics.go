@@ -27,6 +27,7 @@ type Metrics struct {
 	HealthRenewErrors   prometheus.Counter
 	ObservationRepairs  prometheus.Counter
 	InformerRebuilds    prometheus.Counter
+	IsWriter            prometheus.Gauge
 }
 
 // NewMetrics registers and returns the agent metrics.
@@ -68,7 +69,12 @@ func NewMetrics(reg prometheus.Registerer, dc string) *Metrics {
 			Help:        "Count of Lease informer rebuilds after staleness was proven on consecutive watchdog checks.",
 			ConstLabels: cl,
 		}),
+		IsWriter: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "dr", Subsystem: "agent", Name: "is_writer",
+			Help:        "1 on the replica holding the spoke-local writer role (the only replica allowed to write markers, hub Leases, and override annotations).",
+			ConstLabels: cl,
+		}),
 	}
-	reg.MustRegister(m.IsPrimary, m.Contending, m.ElectionTransitions, m.HealthRenewals, m.HealthRenewErrors, m.ObservationRepairs, m.InformerRebuilds)
+	reg.MustRegister(m.IsPrimary, m.Contending, m.ElectionTransitions, m.HealthRenewals, m.HealthRenewErrors, m.ObservationRepairs, m.InformerRebuilds, m.IsWriter)
 	return m
 }

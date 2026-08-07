@@ -184,6 +184,11 @@ controlplane:
 # ----------------------------------------------------------------------------
 agent:
   enabled: true
+  # Agent pods for this DC. With more than one, a spoke-local writer election
+  # (Lease dr-agent-writer-<dc> in this namespace) picks the single replica
+  # allowed to write markers, hub Leases and override annotations; the rest are
+  # hot standbys that take over within the writer election LeaseDuration.
+  replicas: 1
   dcName: ""        # REQUIRED when enabled, for example dc-a
   # Kubeconfig Secret for the coordination control plane (key: kubeconfig).
   # Empty uses the in cluster config (only correct when the agent runs inside the

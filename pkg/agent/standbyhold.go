@@ -21,8 +21,9 @@ import (
 
 	"open-cluster-management.io/dr-controlplane/pkg/leases"
 
+	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 )
 
@@ -83,12 +84,13 @@ import (
 // Condition surface exists.
 
 // localStandbyHoldActive reports whether this DC's own spoke carries the
-// standby-hold ConfigMap for scope leaseName. Get only, matching
-// localOverrideActive: presence is the signal, any error (NotFound or
-// otherwise) fails closed to "not active".
-func (a *Agent) localStandbyHoldActive(ctx context.Context, spoke kubernetes.Interface, leaseName string) bool {
+// standby-hold ConfigMap for scope leaseName. Get only (through the writer
+// manager's cache), matching localOverrideActive: presence is the signal, any
+// error (NotFound or otherwise) fails closed to "not active".
+func (a *Agent) localStandbyHoldActive(ctx context.Context, leaseName string) bool {
 	name := leaseName + leases.StandbyHoldConfigMapSuffix
-	_, err := spoke.CoreV1().ConfigMaps(a.opts.MarkerNamespace).Get(ctx, name, metav1.GetOptions{})
+	var cm core.ConfigMap
+	err := a.spoke.Get(ctx, types.NamespacedName{Namespace: a.opts.MarkerNamespace, Name: name}, &cm)
 	return err == nil
 }
 
@@ -165,7 +167,7 @@ func standbyHoldConflict(standbyActive, overrideActive, isHolder bool) bool {
 // against the STALE value, which is exactly the race that made the live repro
 // look intermittent. Deciding here, right where the value changes, removes the
 // ordering dependency entirely.
-func (a *Agent) reconcileStandbyHold(ctx context.Context, spoke kubernetes.Interface) {
+func (a *Agent) reconcileStandbyHold(ctx context.Context) {
 	a.mu.Lock()
 	snapshot := make(map[string]markerState, len(a.holders))
 	for k, v := range a.holders {
@@ -174,8 +176,8 @@ func (a *Agent) reconcileStandbyHold(ctx context.Context, spoke kubernetes.Inter
 	a.mu.Unlock()
 
 	for name, st := range snapshot {
-		active := a.localStandbyHoldActive(ctx, spoke, name)
-		overrideActive := a.localOverrideActive(ctx, spoke, name)
+		active := a.localStandbyHoldActive(ctx, name)
+		overrideActive := a.localOverrideActive(ctx, name)
 
 		a.mu.Lock()
 		wasActive := a.standbyHold[name]

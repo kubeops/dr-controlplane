@@ -21,6 +21,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Agent orchestrates the health Lease renewal and the per scope leader election.
@@ -58,6 +60,22 @@ type Agent struct {
 	// signal or the watchdog. Falls back to cs when nil (tests).
 	aux kubernetes.Interface
 
+	// spoke is the controller-runtime cached client for the LOCAL spoke cluster,
+	// from the writer manager (see writer.go). All spoke reads (markers, override
+	// and standby-hold ConfigMaps) go through its informer cache; writes hit the
+	// API server directly.
+	spoke client.Client
+
+	// isWriter is true only on the replica that won the spoke-local writer
+	// election. Every write path (electors, health renewals, marker projection,
+	// override reconciliation) is gated on it; non-writers only observe.
+	isWriter atomic.Bool
+
+	// observationSynced is set once the hub Lease informer has synced. It is the
+	// non-writer replica's health signal: a hot standby is healthy when its view
+	// of the hub is live, not when it writes (it never writes).
+	observationSynced atomic.Bool
+
 	// informerCancel stops the current Lease informer; the observation watchdog uses
 	// it to rebuild a wedged informer without restarting the process.
 	informerMu     sync.Mutex
@@ -73,18 +91,27 @@ type Agent struct {
 // restart is what picks up a rotated one.
 const HealthStaleAfter = 90 * time.Second
 
-// Healthy reports whether this agent has successfully written to the coordination control
-// plane recently enough.
+// Healthy reports whether this agent replica is doing its job, judged by role.
 //
-// This exists because the addon's health prober is deployment availability, so an agent
-// that was running but could not talk to the control plane at all still reported
-// Available=True. Observed live: after a control-plane rebuild minted a new CA, all three
-// agents failed every call with "x509: certificate signed by unknown authority" for ~35
-// minutes while every ManagedClusterAddOn reported healthy, and none of them ever
-// restarted (restarts=0), so nothing surfaced the outage and nothing reloaded the
-// credential. Failing the probe fixes both halves: the addon reports the truth, and the
-// kubelet restarts the pod, which re-reads the mounted kubeconfig.
+// The WRITER is judged by hub-write freshness: it must have successfully written to
+// the coordination control plane within HealthStaleAfter. This exists because the
+// addon's health prober is deployment availability, so an agent that was running but
+// could not talk to the control plane at all still reported Available=True. Observed
+// live: after a control-plane rebuild minted a new CA, all three agents failed every
+// call with "x509: certificate signed by unknown authority" for ~35 minutes while
+// every ManagedClusterAddOn reported healthy, and none of them ever restarted
+// (restarts=0), so nothing surfaced the outage and nothing reloaded the credential.
+// Failing the probe fixes both halves: the addon reports the truth, and the kubelet
+// restarts the pod, which re-reads the mounted kubeconfig.
+//
+// A NON-WRITER never writes to the hub by design, so hub-write freshness would
+// restart it every probe cycle forever. Its job is to stay a hot standby: healthy
+// once its hub Lease observation is live. If its spoke API is unreachable it cannot
+// win the writer election anyway, and a restart would not change that.
 func (a *Agent) Healthy() bool {
+	if !a.isWriter.Load() {
+		return a.observationSynced.Load()
+	}
 	last := a.lastHealthOK.Load()
 	return last != 0 && time.Since(time.Unix(0, last)) <= HealthStaleAfter
 }
@@ -94,11 +121,14 @@ func (a *Agent) noteHealthOK() { a.lastHealthOK.Store(time.Now().UnixNano()) }
 
 // markerState is the per scope value the projector writes to the spoke: which DC
 // the quorum trusts, the Lease renewTime that proves the view is current, and the
-// DC (if any) the hub has asked to quiesce for a planned switchover.
+// DC (if any) the hub has asked to quiesce for a planned switchover. It also
+// carries the observed override-hold annotation so the override reconciler can
+// decide from the informer view instead of an uncached hub Get per scope per tick.
 type markerState struct {
-	dc      string
-	renew   time.Time
-	quiesce string
+	dc           string
+	renew        time.Time
+	quiesce      string
+	overrideHold string
 }
 
 // New builds an Agent. aux is an optional second clientset for the
@@ -120,21 +150,36 @@ func New(opts Options, cs, aux kubernetes.Interface, metrics *Metrics) *Agent {
 	return a
 }
 
-// Run starts the health renewer and the Lease informer, then blocks until ctx is done.
+// Run starts the observation half on every replica (hub Lease informer plus the
+// watchdog), then hands control to the spoke writer manager. The write half
+// (health renewals, marker projection, electors, override reconciliation) runs
+// inside writerRunnable, which the manager starts only on the replica that wins
+// the spoke-local writer election. Losing the writer role stops the manager and
+// Run returns its error; the process exits and rejoins as a non-writer.
 func (a *Agent) Run(ctx context.Context) error {
 	a.rootCtx = ctx
 
-	go a.runHealthRenewer(ctx)
-	go a.runProjector(ctx)
+	mgr, err := a.newSpokeManager()
+	if err != nil {
+		return err
+	}
+	a.spoke = mgr.GetClient()
 
 	if err := a.startInformer(ctx); err != nil {
 		return err
 	}
+	a.observationSynced.Store(true)
 	klog.InfoS("DC agent running", "dcdr.dc", a.opts.DCName, "namespace", a.opts.Namespace)
 
 	go a.runObservationWatchdog(ctx)
 
-	<-ctx.Done()
+	if err := mgr.Add(writerRunnable{a}); err != nil {
+		return err
+	}
+	if err := mgr.Start(ctx); err != nil {
+		a.stopAll()
+		return fmt.Errorf("spoke writer manager stopped: %w", err)
+	}
 	a.stopAll()
 	return ctx.Err()
 }
@@ -233,17 +278,23 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	standbyHold := a.standbyHold[l.Name]
 	a.mu.Unlock()
 
-	contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold)
-	a.electorFor(scope, l.Name).setDesired(contend)
+	// Contention and the handoff release are write paths: only the replica
+	// holding the spoke-local writer role runs them (see writer.go). Non-writer
+	// replicas fall through to the holders update below so their observation
+	// stays warm for takeover.
+	if a.isWriter.Load() {
+		contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold)
+		a.electorFor(scope, l.Name).setDesired(contend)
 
-	// A coordinated handoff is the only path that actively moves the Lease: the
-	// holder steps aside by releasing it exactly once, after its elector has been
-	// paused just above (desiredContend is false for the holder while a handoff
-	// to another Member is pending). Nothing else releases, ever; on every other
-	// path (agent restarts, member changes, override or standby holds) the Lease
-	// moves only by expiring after the holder stops renewing it.
-	if handoffTo != "" && handoffTargetIsMember && handoffTo != a.opts.DCName && holder == a.opts.DCName {
-		a.releaseForHandoff(a.rootCtx, l.Name, handoffTo)
+		// A coordinated handoff is the only path that actively moves the Lease: the
+		// holder steps aside by releasing it exactly once, after its elector has been
+		// paused just above (desiredContend is false for the holder while a handoff
+		// to another Member is pending). Nothing else releases, ever; on every other
+		// path (agent restarts, member changes, override or standby holds) the Lease
+		// moves only by expiring after the holder stops renewing it.
+		if handoffTo != "" && handoffTargetIsMember && handoffTo != a.opts.DCName && holder == a.opts.DCName {
+			a.releaseForHandoff(a.rootCtx, l.Name, handoffTo)
+		}
 	}
 
 	// Record the holder and the Lease renewTime for the projector. Tying the marker
@@ -258,12 +309,12 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	// DC's coordinator can hold its primary read only while the target catches up.
 	quiesce := l.Annotations[leases.AnnQuiesce]
 	a.mu.Lock()
-	a.holders[l.Name] = markerState{dc: holder, renew: renew, quiesce: quiesce}
+	a.holders[l.Name] = markerState{dc: holder, renew: renew, quiesce: quiesce, overrideHold: overrideHold}
 	a.mu.Unlock()
 
 	// Once the target holds the Lease, the holder clears the handoff annotation
-	// so the system returns to normal contention.
-	if handoffTo != "" && holder == handoffTo && holder == a.opts.DCName {
+	// so the system returns to normal contention. A hub write, so writer only.
+	if a.isWriter.Load() && handoffTo != "" && holder == handoffTo && holder == a.opts.DCName {
 		a.clearHandoff(a.rootCtx, l.Name)
 	}
 }

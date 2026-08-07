@@ -88,10 +88,11 @@ type AgentOptions struct {
 	// hand and re-created every time the control plane mints a new CA.
 	CoordKubeconfigMirrorNamespaces []string
 
-	// Replicas is how many agent pods each spoke runs. More than one buys pod
-	// crash insurance only (all replicas share the DC identity, renew the same
-	// Leases, and project the same markers, so extras are harmless but add no
-	// quorum weight; only etcd members vote).
+	// Replicas is how many agent pods each spoke runs. With more than one, a
+	// spoke-local writer election picks the single replica allowed to write
+	// (markers, hub Leases, override annotations); the rest stay hot standbys
+	// with a warm hub observation and take over within the writer election
+	// LeaseDuration. Extra replicas add no quorum weight; only etcd members vote.
 	Replicas int
 	// ImageRepository, ImageTag and ImagePullSecrets describe where the spoke pulls
 	// the dr-controlplane image from. ImagePullSecrets is a list of Secret names
