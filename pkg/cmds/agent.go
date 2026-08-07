@@ -56,11 +56,23 @@ func runAgent(ctx context.Context, opts agent.Options) error {
 	if err != nil {
 		return err
 	}
+	// A second clientset over the same config: rest.Config is copied by value into
+	// each clientset, so this one carries its OWN rate limiter. The health Lease
+	// renewals and the observation watchdog run on it, out of reach of elector
+	// bursts (see agent.Options.ClientQPS for the incident this prevents).
+	auxCfg, err := opts.RESTConfig()
+	if err != nil {
+		return err
+	}
+	aux, err := kubernetes.NewForConfig(auxCfg)
+	if err != nil {
+		return err
+	}
 
 	reg := prometheus.NewRegistry()
 	m := agent.NewMetrics(reg, opts.DCName)
 
-	a := agent.New(opts, cs, m)
+	a := agent.New(opts, cs, aux, m)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))

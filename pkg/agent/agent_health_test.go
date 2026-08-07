@@ -55,7 +55,7 @@ func TestAgentHealthyReflectsCoordinationPlaneReachability(t *testing.T) {
 // TestNewAgentSeedsHealth pins that startup is covered by the same window, so an agent
 // is not declared dead before its first renewal has had a chance to run.
 func TestNewAgentSeedsHealth(t *testing.T) {
-	a := New(Options{}, nil, nil)
+	a := New(Options{}, nil, nil, nil)
 	if !a.Healthy() {
 		t.Fatal("a freshly constructed agent must start healthy so startup is not a restart loop")
 	}

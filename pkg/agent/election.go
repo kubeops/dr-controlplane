@@ -18,12 +18,14 @@ package agent
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 	"time"
 
 	"open-cluster-management.io/dr-controlplane/pkg/leases"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
@@ -125,6 +127,22 @@ func (e *scopeElector) run(ctx context.Context) {
 			},
 		},
 	}
+	// Per-scope startup offset, deterministic in the scope name. After a restart
+	// (or a control plane recovery) every elector would otherwise wake on the
+	// same tick and their combined GET+PUT burst lands as one synchronized wave,
+	// which is exactly the load shape that overran the client rate limiter and
+	// starved renewals when ~19 scopes came up together. Spreading the start
+	// inside one RetryPeriod desynchronizes the fleet permanently, because each
+	// elector keeps its own phase from then on.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(e.scope.PrimaryLeaseName()))
+	offset := time.Duration(uint64(h.Sum32()) * uint64(e.a.opts.Election.RetryPeriod) / (1 << 32))
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(offset):
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -134,7 +152,7 @@ func (e *scopeElector) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(e.a.opts.Election.RetryPeriod):
+		case <-time.After(wait.Jitter(e.a.opts.Election.RetryPeriod, 0.5)):
 		}
 	}
 }

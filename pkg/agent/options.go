@@ -62,6 +62,20 @@ type Options struct {
 	// MarkerRefreshInterval is how often the marker renewTime is restamped. It must
 	// be well under the fence TTL so a healthy marker always reads fresh.
 	MarkerRefreshInterval time.Duration
+
+	// ClientQPS and ClientBurst size the coordination-plane client's rate limiter.
+	// Every scope elector, the informer's relists, and the handoff writes share one
+	// client, so the limiter must be sized for the whole fleet of scopes, not for a
+	// single controller. Observed live (2026-08-07): the client-go default of 5 QPS
+	// under ~19 scopes queued requests faster than they drained; the token-bucket
+	// queue grew without bound, renewals missed their deadlines (leadership flapped,
+	// 130 transitions on one Lease), the reflector's relist starved (the observed
+	// Lease state froze for 13+ minutes and every marker went stale, fencing every
+	// DC read only), and the health renewals starved (liveness restarted the agents
+	// 180+ times in one night). These defaults give an order of magnitude of
+	// headroom; raise them further for very large scope counts.
+	ClientQPS   float32
+	ClientBurst int
 }
 
 // DefaultOptions returns conservative WAN friendly defaults.
@@ -87,6 +101,8 @@ func DefaultOptions() Options {
 			RenewDeadline: 30 * time.Second,
 			RetryPeriod:   2 * time.Second,
 		},
+		ClientQPS:   100,
+		ClientBurst: 200,
 	}
 }
 
@@ -104,6 +120,8 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.SpokeKubeconfig, "spoke-kubeconfig", o.SpokeKubeconfig, "Path to the local DC cluster kubeconfig where the active DC marker is projected. Empty means in cluster.")
 	fs.StringVar(&o.MarkerNamespace, "marker-namespace", o.MarkerNamespace, "Namespace on the spoke where the active DC marker ConfigMap is written.")
 	fs.DurationVar(&o.MarkerRefreshInterval, "marker-refresh-interval", o.MarkerRefreshInterval, "How often the active DC marker renewTime is restamped (must be well under the fence TTL).")
+	fs.Float32Var(&o.ClientQPS, "client-qps", o.ClientQPS, "QPS for the coordination control plane client. Size for the whole scope fleet: electors, informer relists and handoffs share this budget.")
+	fs.IntVar(&o.ClientBurst, "client-burst", o.ClientBurst, "Burst for the coordination control plane client.")
 }
 
 // Validate checks the options.
@@ -120,15 +138,27 @@ func (o Options) Validate() error {
 	if o.Election.RetryPeriod <= 0 || o.Election.RetryPeriod >= o.Election.RenewDeadline {
 		return fmt.Errorf("election-retry-period must be positive and less than election-renew-deadline")
 	}
+	if o.ClientQPS <= 0 || o.ClientBurst <= 0 {
+		return fmt.Errorf("client-qps and client-burst must be positive")
+	}
 	return nil
 }
 
 // RESTConfig builds the client config for the coordination control plane.
 func (o Options) RESTConfig() (*rest.Config, error) {
+	var cfg *rest.Config
+	var err error
 	if o.Kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", o.Kubeconfig)
+		cfg, err = clientcmd.BuildConfigFromFlags("", o.Kubeconfig)
+	} else {
+		cfg, err = rest.InClusterConfig()
 	}
-	return rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.QPS = o.ClientQPS
+	cfg.Burst = o.ClientBurst
+	return cfg, nil
 }
 
 // SpokeRESTConfig builds the client config for the local DC cluster where the

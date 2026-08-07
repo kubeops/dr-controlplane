@@ -51,6 +51,17 @@ type Agent struct {
 	// last time this agent could actually reach the coordination control plane. Seeded at
 	// construction so process startup is covered by the same staleness window.
 	lastHealthOK atomic.Int64
+
+	// aux is a second clientset for the liveness-critical paths (health Lease renewal
+	// and the observation watchdog's List). It shares the server but NOT the rate
+	// limiter with cs, so a flood of elector traffic can never starve the health
+	// signal or the watchdog. Falls back to cs when nil (tests).
+	aux kubernetes.Interface
+
+	// informerCancel stops the current Lease informer; the observation watchdog uses
+	// it to rebuild a wedged informer without restarting the process.
+	informerMu     sync.Mutex
+	informerCancel context.CancelFunc
 }
 
 // HealthStaleAfter is how long an agent may go without a successful coordination-plane
@@ -90,11 +101,16 @@ type markerState struct {
 	quiesce string
 }
 
-// New builds an Agent.
-func New(opts Options, cs kubernetes.Interface, metrics *Metrics) *Agent {
+// New builds an Agent. aux is an optional second clientset for the
+// liveness-critical paths (see the field comment); nil falls back to cs.
+func New(opts Options, cs, aux kubernetes.Interface, metrics *Metrics) *Agent {
+	if aux == nil {
+		aux = cs
+	}
 	a := &Agent{
 		opts:        opts,
 		cs:          cs,
+		aux:         aux,
 		metrics:     metrics,
 		electors:    map[string]*scopeElector{},
 		holders:     map[string]markerState{},
@@ -111,6 +127,31 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.runHealthRenewer(ctx)
 	go a.runProjector(ctx)
 
+	if err := a.startInformer(ctx); err != nil {
+		return err
+	}
+	klog.InfoS("DC agent running", "dcdr.dc", a.opts.DCName, "namespace", a.opts.Namespace)
+
+	go a.runObservationWatchdog(ctx)
+
+	<-ctx.Done()
+	a.stopAll()
+	return ctx.Err()
+}
+
+// startInformer builds and syncs a fresh Lease informer. The previous informer, if
+// any, is stopped first. The observation watchdog calls this again when it proves
+// the informer's view has fallen behind the server (a hung watch); everything else
+// about the agent keeps running across the swap.
+func (a *Agent) startInformer(ctx context.Context) error {
+	a.informerMu.Lock()
+	if a.informerCancel != nil {
+		a.informerCancel()
+	}
+	ictx, cancel := context.WithCancel(ctx)
+	a.informerCancel = cancel
+	a.informerMu.Unlock()
+
 	factory := informers.NewSharedInformerFactoryWithOptions(a.cs, 10*time.Minute, informers.WithNamespace(a.opts.Namespace))
 	informer := factory.Coordination().V1().Leases().Informer()
 	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -119,15 +160,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		DeleteFunc: func(obj any) { a.onDelete(obj) },
 	})
 
-	factory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+	factory.Start(ictx.Done())
+	if !cache.WaitForCacheSync(ictx.Done(), informer.HasSynced) {
 		return ctx.Err()
 	}
-	klog.InfoS("DC agent running", "dcdr.dc", a.opts.DCName, "namespace", a.opts.Namespace)
-
-	<-ctx.Done()
-	a.stopAll()
-	return ctx.Err()
+	return nil
 }
 
 func (a *Agent) onLease(obj any) {
@@ -166,15 +203,17 @@ func (a *Agent) onDelete(obj any) {
 // reconcile drives this DC's contention for one primary DC Lease.
 //
 // Cold-start safety (A43(c)): electorFor only ever creates and starts a scope's
-// elector from inside this function, and this function only ever runs when the
-// Lease informer delivers an event for that Lease, which cache.WaitForCacheSync
-// guarantees happens for every pre-existing Lease before Run returns. So a
+// elector from inside this function, and this function only ever runs with a
+// Lease actually read from the control plane: either the informer delivered an
+// event for it (cache.WaitForCacheSync guarantees that happens for every
+// pre-existing Lease before startInformer returns) or the observation watchdog
+// listed it directly after proving the informer's view had fallen behind. So a
 // freshly started or restarted agent has zero electors, hence contends for
 // nothing, until it has read the current Lease state at least once; there is no
 // code path that can start contention from a nil or never-observed Lease. This
 // is a structural property of the call graph (electorFor has exactly one call
 // site, right here), not a runtime flag, so keep it that way: do not add a
-// second path into electorFor that bypasses an observed Lease.
+// path into electorFor that bypasses an observed Lease.
 func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	scope, ok := leases.ScopeFromPrimaryLeaseName(l.Name)
 	if !ok {

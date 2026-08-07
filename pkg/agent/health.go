@@ -48,7 +48,11 @@ func (a *Agent) runHealthRenewer(ctx context.Context) {
 func (a *Agent) renewHealth(ctx context.Context, name string) {
 	durSec := int32(a.opts.HealthLeaseDuration.Seconds())
 	now := metav1.NewMicroTime(time.Now())
-	cl := a.cs.CoordinationV1().Leases(a.opts.Namespace)
+	// The aux client: the health Lease is the DC's liveness signal, so its renewals
+	// must never queue behind elector traffic in a shared rate limiter. Observed
+	// live: renewals starving in that queue restarted the agents 180+ times in one
+	// night via the /healthz staleness probe.
+	cl := a.aux.CoordinationV1().Leases(a.opts.Namespace)
 
 	cur, err := cl.Get(ctx, name, metav1.GetOptions{})
 	switch {
