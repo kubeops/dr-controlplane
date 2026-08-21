@@ -14,7 +14,7 @@
 
 SHELL=/bin/bash -o pipefail
 
-GO_PKG   := open-cluster-management.io
+GO_PKG   := github.com/kluster-manager
 REPO     := $(notdir $(shell pwd))
 BIN      := dr-controlplane
 COMPRESS ?= no
@@ -47,7 +47,7 @@ endif
 ### These variables should not need tweaking.
 ###
 
-SRC_PKGS := pkg
+SRC_PKGS := pkg ocm
 SRC_DIRS := $(SRC_PKGS) cmd # directories which hold app source (not vendored)
 
 DOCKER_PLATFORMS := linux/amd64 linux/arm64

@@ -22,7 +22,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"open-cluster-management.io/dr-controlplane/pkg/leases"
+	"github.com/kluster-manager/dr-controlplane/pkg/leases"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

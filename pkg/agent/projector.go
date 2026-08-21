@@ -23,7 +23,7 @@ import (
 	core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 )
 
@@ -48,46 +48,36 @@ const (
 // runProjector mirrors each scope's primary DC holder into the local spoke as a
 // marker ConfigMap, refreshed on an interval. A healthy agent restamps a fresh
 // renewTime; a partitioned agent stops seeing Lease updates so the value freezes
-// and the fence trips. Projection failures never take down the agent.
+// and the fence trips. Projection failures never take down the agent. On the
+// same tick it also reconciles the break glass override-hold Lease annotation
+// against this DC's local override ConfigMap (see override.go, A43(c)), and
+// refreshes this DC's cached standby-hold state against its local standby-hold
+// ConfigMap (see standbyhold.go, A44).
+//
+// Runs only on the writer replica (writer.go); all spoke reads go through the
+// writer manager's cached client.
 func (a *Agent) runProjector(ctx context.Context) {
 	interval := a.opts.MarkerRefreshInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	klog.InfoS("active DC marker projector running", "namespace", a.opts.MarkerNamespace, "interval", interval.String())
+	klog.InfoS("active DC marker projector running", "dcdr.dc", a.opts.DCName, "namespace", a.opts.MarkerNamespace, "interval", interval.String())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var spoke kubernetes.Interface
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if spoke == nil {
-				// Build the spoke client lazily and retry on every tick. A transient
-				// failure here must not disable projection for the agent's lifetime:
-				// this DC could be elected active while its marker is never written,
-				// and the consumer fence would then hold every leader read only.
-				cfg, err := a.opts.SpokeRESTConfig()
-				if err != nil {
-					klog.ErrorS(err, "active DC marker projection waiting: no spoke client config")
-					continue
-				}
-				s, err := kubernetes.NewForConfig(cfg)
-				if err != nil {
-					klog.ErrorS(err, "active DC marker projection waiting: cannot build spoke client")
-					continue
-				}
-				spoke = s
-				klog.InfoS("active DC marker projector spoke client ready")
-			}
-			a.projectMarkers(ctx, spoke)
+			a.projectMarkers(ctx)
+			a.reconcileOverrides(ctx)
+			a.reconcileStandbyHold(ctx)
 		}
 	}
 }
 
-func (a *Agent) projectMarkers(ctx context.Context, spoke kubernetes.Interface) {
+func (a *Agent) projectMarkers(ctx context.Context) {
 	a.mu.Lock()
 	snapshot := make(map[string]markerState, len(a.holders))
 	for k, v := range a.holders {
@@ -96,13 +86,13 @@ func (a *Agent) projectMarkers(ctx context.Context, spoke kubernetes.Interface) 
 	a.mu.Unlock()
 
 	for name, st := range snapshot {
-		if err := a.upsertMarker(ctx, spoke, name, st); err != nil {
-			klog.ErrorS(err, "failed to project active DC marker", "marker", name)
+		if err := a.upsertMarker(ctx, name, st); err != nil {
+			klog.ErrorS(err, "failed to project active DC marker", "dcdr.dc", a.opts.DCName, "dcdr.scope", name)
 		}
 	}
 }
 
-func (a *Agent) upsertMarker(ctx context.Context, spoke kubernetes.Interface, name string, st markerState) error {
+func (a *Agent) upsertMarker(ctx context.Context, name string, st markerState) error {
 	renew := ""
 	if !st.renew.IsZero() {
 		renew = st.renew.UTC().Format(time.RFC3339)
@@ -112,8 +102,8 @@ func (a *Agent) upsertMarker(ctx context.Context, spoke kubernetes.Interface, na
 		MarkerKeyRenew:    renew,
 		MarkerKeyQuiesce:  st.quiesce,
 	}
-	cms := spoke.CoreV1().ConfigMaps(a.opts.MarkerNamespace)
-	cur, err := cms.Get(ctx, name, metav1.GetOptions{})
+	var cur core.ConfigMap
+	err := a.spoke.Get(ctx, types.NamespacedName{Namespace: a.opts.MarkerNamespace, Name: name}, &cur)
 	if apierrors.IsNotFound(err) {
 		cm := &core.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
@@ -123,11 +113,22 @@ func (a *Agent) upsertMarker(ctx context.Context, spoke kubernetes.Interface, na
 			},
 			Data: data,
 		}
-		_, err = cms.Create(ctx, cm, metav1.CreateOptions{})
-		return err
+		return a.spoke.Create(ctx, cm)
 	}
 	if err != nil {
 		return err
+	}
+	// Monotonic guard: never replace a marker with an OLDER renewTime. The fence
+	// fails closed on staleness, so the only harmful write a racing or lagging
+	// writer could make is one that ages the marker; refusing it makes even a
+	// split-leadership instant harmless. Holder changes are safe under this rule
+	// because moving a Lease always advances its renewTime.
+	if curRenew, e := time.Parse(time.RFC3339, cur.Data[MarkerKeyRenew]); e == nil && renew != "" {
+		if newRenew, e2 := time.Parse(time.RFC3339, renew); e2 == nil && newRenew.Before(curRenew) {
+			klog.V(3).InfoS("skipping marker write with an older renewTime than the current marker",
+				"dcdr.scope", name, "current", cur.Data[MarkerKeyRenew], "incoming", renew)
+			return nil
+		}
 	}
 	if cur.Data[MarkerKeyActiveDC] == data[MarkerKeyActiveDC] &&
 		cur.Data[MarkerKeyRenew] == data[MarkerKeyRenew] &&
@@ -135,6 +136,5 @@ func (a *Agent) upsertMarker(ctx context.Context, spoke kubernetes.Interface, na
 		return nil
 	}
 	cur.Data = data
-	_, err = cms.Update(ctx, cur, metav1.UpdateOptions{})
-	return err
+	return a.spoke.Update(ctx, &cur)
 }
