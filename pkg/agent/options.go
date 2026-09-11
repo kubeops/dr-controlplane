@@ -76,17 +76,19 @@ type Options struct {
 	// death never fences a healthy DC.
 	WriterElection ElectionConfig
 
-	// ClientQPS and ClientBurst size the coordination-plane client's rate limiter.
-	// Every scope elector, the informer's relists, and the handoff writes share one
-	// client, so the limiter must be sized for the whole fleet of scopes, not for a
-	// single controller. Observed live (2026-08-07): the client-go default of 5 QPS
-	// under ~19 scopes queued requests faster than they drained; the token-bucket
-	// queue grew without bound, renewals missed their deadlines (leadership flapped,
-	// 130 transitions on one Lease), the reflector's relist starved (the observed
-	// Lease state froze for 13+ minutes and every marker went stale, fencing every
-	// DC read only), and the health renewals starved (liveness restarted the agents
-	// 180+ times in one night). These defaults give an order of magnitude of
-	// headroom; raise them further for very large scope counts.
+	// ClientQPS and ClientBurst size the rate limiter of BOTH the coordination-plane
+	// clients (RESTConfig: electors, informer relists, handoff writes, and the aux
+	// health/watchdog client) and the spoke client (SpokeRESTConfig: writer election,
+	// marker projection). Every scope elector shares one client, so the limiter must
+	// be sized for the whole fleet of scopes, not a single controller. Observed live
+	// (2026-08-07): the client-go default of 5 QPS under ~19 scopes queued requests
+	// faster than they drained; renewals missed deadlines (130 leadership transitions
+	// on one Lease), the reflector starved (markers froze 13+ minutes, fencing every
+	// DC read only), and health renewals starved (liveness restarted the agents 180+
+	// times in one night). Observed again 2026-09-11: a conflict storm (forked etcd +
+	// orphan scopes) exhausted even 100 QPS ("client rate limiter Wait returned an
+	// error"). The default is now effectively unthrottled; the API server's
+	// priority-and-fairness is the real backpressure.
 	ClientQPS   float32
 	ClientBurst int
 }
@@ -119,8 +121,8 @@ func DefaultOptions() Options {
 			RenewDeadline: 10 * time.Second,
 			RetryPeriod:   2 * time.Second,
 		},
-		ClientQPS:   100,
-		ClientBurst: 200,
+		ClientQPS:   50000,
+		ClientBurst: 50000,
 	}
 }
 
@@ -189,10 +191,23 @@ func (o Options) RESTConfig() (*rest.Config, error) {
 }
 
 // SpokeRESTConfig builds the client config for the local DC cluster where the
-// active DC marker is projected. Empty SpokeKubeconfig means in cluster.
+// active DC marker is projected. Empty SpokeKubeconfig means in cluster. It gets
+// the same generous limiter as the coordination clients: marker projection writes
+// scale with the scope count (one restamp per scope per refresh tick) and at the
+// client-go default of 5 QPS ~15 scopes already brush the ceiling, which would
+// throttle marker restamps — a fence-staleness input.
 func (o Options) SpokeRESTConfig() (*rest.Config, error) {
+	var cfg *rest.Config
+	var err error
 	if o.SpokeKubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", o.SpokeKubeconfig)
+		cfg, err = clientcmd.BuildConfigFromFlags("", o.SpokeKubeconfig)
+	} else {
+		cfg, err = rest.InClusterConfig()
 	}
-	return rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.QPS = o.ClientQPS
+	cfg.Burst = o.ClientBurst
+	return cfg, nil
 }

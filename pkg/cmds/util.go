@@ -26,11 +26,24 @@ import (
 )
 
 // restConfig builds a client config from a kubeconfig path, or in cluster when empty.
+// The client-go default rate limiter (QPS=5/Burst=10) has starved DC-DR control loops
+// twice (agent elector fleet 2026-08-07; conflict storm 2026-09-11), so every client this
+// service builds gets an effectively-unthrottled limiter and the API server's own
+// priority-and-fairness does the real protecting.
 func restConfig(kubeconfig string) (*rest.Config, error) {
+	var cfg *rest.Config
+	var err error
 	if kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		cfg, err = rest.InClusterConfig()
 	}
-	return rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.QPS = 50000
+	cfg.Burst = 50000
+	return cfg, nil
 }
 
 // coreClient builds a Kubernetes clientset for the coordination control plane.

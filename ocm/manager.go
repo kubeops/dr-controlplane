@@ -97,6 +97,11 @@ func RunManagerController(opts AgentOptions) error {
 	if err != nil {
 		return err
 	}
+	// Shared by the hub manager, the addon manager, and the kubeconfig mirror. The
+	// client-go default limiter (5 QPS) has starved DC-DR loops before; run
+	// effectively unthrottled and let API priority-and-fairness protect the server.
+	kubeConfig.QPS = 50000
+	kubeConfig.Burst = 50000
 
 	resyncPeriod := 1 * time.Hour
 	hubManager, err := ctrl.NewManager(kubeConfig, manager.Options{
