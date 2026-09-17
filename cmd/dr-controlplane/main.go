@@ -23,7 +23,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"open-cluster-management.io/dr-controlplane/pkg/cmds"
+	"github.com/kluster-manager/dr-controlplane/pkg/cmds"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/klog/v2"

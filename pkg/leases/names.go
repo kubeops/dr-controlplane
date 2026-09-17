@@ -59,7 +59,54 @@ const (
 	// marker as data.quiesce; the active DC's coordinator honors it. Cleared once
 	// the switchover completes (the Lease moves and the old DC self fences anyway).
 	AnnQuiesce = "dr.open-cluster-management.io/quiesce"
+
+	// AnnOverrideHold names the data center a human has pinned via that DC's local
+	// break glass override ConfigMap (see OverrideConfigMapSuffix). While set,
+	// every Member DC other than the named one defers from contending for this
+	// scope's primary DC Lease; the named DC's own agent holds/renews it. Written
+	// and cleared ONLY by the named DC's own agent, and only ever to that agent's
+	// own DC name, mirroring (never writing) the human owned override ConfigMap.
+	// See the DC-DR handoff notes (prompt-library dc-dr/postgres), A42 and
+	// A43(c): break glass itself stays manual only, this annotation is how the
+	// pin becomes visible to DCs that cannot read another spoke's local state.
+	AnnOverrideHold = "dr.open-cluster-management.io/override-hold"
 )
+
+// OverrideConfigMapSuffix names the human owned break glass override ConfigMap
+// relative to a scope's marker/primary Lease name: <name>+OverrideConfigMapSuffix,
+// in the same coordination namespace on the spoke that carries the marker (for
+// example primary-dc-override for the global scope). It must match the
+// pg-coordinator fence's dcBreakGlassOverrideSuffix byte for byte; the two
+// repos read the same human managed object by convention, not shared code, so
+// keep them in sync by hand if either changes.
+const OverrideConfigMapSuffix = "-override"
+
+// StandbyHoldConfigMapSuffix names the human owned standby-hold ConfigMap
+// relative to a scope's marker/primary Lease name, the mirror of
+// OverrideConfigMapSuffix (A44): <name>+StandbyHoldConfigMapSuffix, in the same
+// coordination namespace on the spoke that carries the marker (for example
+// primary-dc-standby-hold for the global scope). Presence forces that DC to
+// never contend for the scope's primary DC Lease, so it never promotes, UNLESS
+// that DC is the current holder (A45 correction): standby-hold is ignored,
+// logged loudly, and has no effect on the active DC, since demoting it without
+// a quiesce/catch-up is unsafe and the safe way to move the primary is a
+// planned switchover. Manual only, same contract as break glass: a human sets
+// and clears it directly on the spoke, this agent and pg-coordinator only ever
+// Get it.
+//
+// Unlike OverrideConfigMapSuffix, standby-hold does not get a companion
+// dr.open-cluster-management.io/* Lease annotation. Break glass needs one
+// because every OTHER DC's contention decision depends on knowing which DC is
+// pinned, and only the pinned DC's own agent can see its own spoke's local
+// ConfigMap. Standby-hold's effect is purely local: only the held DC's own
+// decision to contend changes, and a DC that stops contending is invisible to
+// the rest of the system in exactly the same way a Member that was never
+// eligible is, no other DC's desiredContend logic needs to special case it. So
+// this agent reads the ConfigMap straight into its own contention decision and
+// never writes anything to the shared Lease for it. It must match the
+// pg-coordinator fence's mirror constant byte for byte, same convention as
+// OverrideConfigMapSuffix above.
+const StandbyHoldConfigMapSuffix = "-standby-hold"
 
 const (
 	// LabelManagedBy marks the Leases this service owns.

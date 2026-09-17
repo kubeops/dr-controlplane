@@ -4,7 +4,7 @@ This file provides guidance to coding agents (e.g. Claude Code, claude.ai/code) 
 
 ## Repository purpose
 
-Go module `open-cluster-management.io/dr-controlplane` produces a single binary, `dr-controlplane`, the common DC failover service. It runs a three data center etcd quorum and an OCM control plane that serves the standard `coordination.k8s.io` Lease API as the cross data center failover signal. Other applications, starting with the KubeDB DC/DR driver, read that Lease to decide which data center is primary.
+Go module `github.com/kluster-manager/dr-controlplane` produces a single binary, `dr-controlplane`, the common DC failover service. It runs a three data center etcd quorum and an OCM control plane that serves the standard `coordination.k8s.io` Lease API as the cross data center failover signal. Other applications, starting with the KubeDB DC/DR driver, read that Lease to decide which data center is primary.
 
 The split brain guarantee is the etcd majority: moving a Lease is an etcd write that needs a majority, so a partitioned minority cannot renew and self fences. The service never promotes or demotes a workload itself; it only publishes which data center the quorum trusts.
 
@@ -40,9 +40,15 @@ All Make targets run inside `ghcr.io/appscode/golang-dev`, so Docker must be run
 - `make fmt`, `make lint`, `make test` (alias for `unit-tests`).
 - `make verify` runs `verify-gen verify-modules`; `go mod tidy && go mod vendor` must leave the tree clean.
 - `make container` builds PROD, DBG, and UBI images; `make push`, `make docker-manifest`, `make release` publish.
+  `make release` requires `APPSCODE_ENV=prod` and a git tag; `make qa` is the untagged, non prod equivalent.
 - `make install` / `make uninstall` Helm lifecycle into namespace `dc-failover`.
 - `make add-license` / `make check-license` manage the `ltag` headers.
 - `make run` runs `go run ./cmd/dr-controlplane agent --dc-name=dc-a` against `$KUBECONFIG` for quick local iteration.
+
+GitHub Actions live in `.github/workflows/`: `ci.yml` runs `make ci` on every PR, `release.yml` runs
+`make release` on a tag push, and `release-tracker.yml` reports a merged release PR back to the
+`Release-tracker:` PR named in the commit body. The tracker is dormant here: this repo is not part of
+an automated release train, so no commit carries that trailer and the job exits after its detect step.
 
 Run a single test with a local Go toolchain:
 
@@ -52,7 +58,7 @@ go test ./pkg/topology/... -run TestDeriveTwoDCWithArbiter -v
 
 ## Conventions
 
-- Module path `open-cluster-management.io/dr-controlplane` is a vanity import; keep imports on it.
+- Module path is `github.com/kluster-manager/dr-controlplane`; keep imports on it. The `dr.open-cluster-management.io/*` Lease annotation keys in `pkg/leases` are unrelated to the module path and must not be renamed with it.
 - License is the **AppsCode Free Trial License 1.0.0** (`LICENSE.md`). New files need the standard "Copyright AppsCode Inc. and Contributors" header; `hack/license/` holds the templates and `make add-license` stamps them.
 - Logging is `k8s.io/klog/v2` everywhere. Use `klog.InfoS` / `klog.ErrorS` structured logging, not `fmt` or other loggers.
 - The vendor directory is checked in; `verify-modules` fails if `go mod tidy && go mod vendor` is not clean.

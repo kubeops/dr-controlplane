@@ -17,8 +17,8 @@ limitations under the License.
 package cmds
 
 import (
-	"open-cluster-management.io/dr-controlplane/pkg/leases"
-	"open-cluster-management.io/dr-controlplane/pkg/topology"
+	"github.com/kluster-manager/dr-controlplane/pkg/leases"
+	"github.com/kluster-manager/dr-controlplane/pkg/topology"
 
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/dynamic"

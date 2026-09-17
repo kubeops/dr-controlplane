@@ -14,7 +14,7 @@
 
 SHELL=/bin/bash -o pipefail
 
-GO_PKG   := open-cluster-management.io
+GO_PKG   := github.com/kluster-manager
 REPO     := $(notdir $(shell pwd))
 BIN      := dr-controlplane
 COMPRESS ?= no
@@ -47,7 +47,7 @@ endif
 ### These variables should not need tweaking.
 ###
 
-SRC_PKGS := pkg
+SRC_PKGS := pkg ocm
 SRC_DIRS := $(SRC_PKGS) cmd # directories which hold app source (not vendored)
 
 DOCKER_PLATFORMS := linux/amd64 linux/arm64
@@ -124,13 +124,17 @@ all-container: $(addprefix container-, $(subst /,_, $(DOCKER_PLATFORMS)))
 
 all-push: $(addprefix push-, $(subst /,_, $(DOCKER_PLATFORMS)))
 
-version:
+version: version-PROD version-DBG version-UBI
+	@echo IMAGE=$(IMAGE)
+	@echo BIN=$(BIN)
 	@echo version=$(VERSION)
 	@echo version_strategy=$(version_strategy)
 	@echo git_tag=$(git_tag)
 	@echo git_branch=$(git_branch)
 	@echo commit_hash=$(commit_hash)
 	@echo commit_timestamp=$(commit_timestamp)
+version-%:
+	@echo TAG_$*=$(TAG_$*)
 
 gen:
 	@true
@@ -365,6 +369,30 @@ check-license:
 
 .PHONY: ci
 ci: verify check-license lint build unit-tests
+
+.PHONY: qa
+qa:
+	@if [ "$$APPSCODE_ENV" = "prod" ]; then                                              \
+		echo "Nothing to do in prod env. Are you trying to 'release' binaries to prod?"; \
+		exit 1;                                                                          \
+	fi
+	@if [ "$(version_strategy)" = "tag" ]; then               \
+		echo "Are you trying to 'release' binaries to prod?"; \
+		exit 1;                                               \
+	fi
+	@$(MAKE) clean all-push docker-manifest --no-print-directory
+
+.PHONY: release
+release:
+	@if [ "$$APPSCODE_ENV" != "prod" ]; then      \
+		echo "'release' only works in PROD env."; \
+		exit 1;                                   \
+	fi
+	@if [ "$(version_strategy)" != "tag" ]; then                    \
+		echo "apply tag to release binaries and/or docker images."; \
+		exit 1;                                                     \
+	fi
+	@$(MAKE) clean all-push docker-manifest --no-print-directory
 
 .PHONY: clean
 clean:

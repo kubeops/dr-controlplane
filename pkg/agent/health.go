@@ -20,7 +20,7 @@ import (
 	"context"
 	"time"
 
-	"open-cluster-management.io/dr-controlplane/pkg/leases"
+	"github.com/kluster-manager/dr-controlplane/pkg/leases"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,7 +48,11 @@ func (a *Agent) runHealthRenewer(ctx context.Context) {
 func (a *Agent) renewHealth(ctx context.Context, name string) {
 	durSec := int32(a.opts.HealthLeaseDuration.Seconds())
 	now := metav1.NewMicroTime(time.Now())
-	cl := a.cs.CoordinationV1().Leases(a.opts.Namespace)
+	// The aux client: the health Lease is the DC's liveness signal, so its renewals
+	// must never queue behind elector traffic in a shared rate limiter. Observed
+	// live: renewals starving in that queue restarted the agents 180+ times in one
+	// night via the /healthz staleness probe.
+	cl := a.aux.CoordinationV1().Leases(a.opts.Namespace)
 
 	cur, err := cl.Get(ctx, name, metav1.GetOptions{})
 	switch {
@@ -76,8 +80,19 @@ func (a *Agent) renewHealth(ctx context.Context, name string) {
 
 	if err != nil {
 		a.metrics.HealthRenewErrors.Inc()
-		klog.V(2).ErrorS(err, "health Lease renewal failed (loss of etcd majority looks like this)", "lease", name)
+		if credentialClassError(err) {
+			// Only credential-class failures may fail the liveness probe: a
+			// restart re-reads the mounted kubeconfig, which is the one thing
+			// it can fix. Plain unreachability must never restart the writer
+			// (observed live: the probe bounced the writer role between
+			// replicas for an entire hub outage).
+			a.noteAuthFailure()
+			klog.ErrorS(err, "health Lease renewal failed with a credential-class error; the liveness probe will restart this pod to reload the kubeconfig", "dcdr.scope", name)
+			return
+		}
+		klog.V(2).ErrorS(err, "health Lease renewal failed (hub unreachable or etcd majority lost; fail-closed fencing protects the databases)", "dcdr.scope", name)
 		return
 	}
 	a.metrics.HealthRenewals.Inc()
+	a.noteHealthOK()
 }

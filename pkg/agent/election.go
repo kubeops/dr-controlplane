@@ -18,12 +18,14 @@ package agent
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 	"time"
 
-	"open-cluster-management.io/dr-controlplane/pkg/leases"
+	"github.com/kluster-manager/dr-controlplane/pkg/leases"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
@@ -61,7 +63,7 @@ func (e *scopeElector) setDesired(run bool) {
 		e.cancel = cancel
 		e.running = true
 		e.a.metrics.Contending.WithLabelValues(label).Set(1)
-		klog.InfoS("contending for primary DC Lease", "scope", label, "dc", e.a.opts.DCName)
+		klog.InfoS("contending for primary DC Lease", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 		go e.run(ctx)
 	} else {
 		if e.cancel != nil {
@@ -71,7 +73,7 @@ func (e *scopeElector) setDesired(run bool) {
 		e.running = false
 		e.a.metrics.Contending.WithLabelValues(label).Set(0)
 		e.a.metrics.IsPrimary.WithLabelValues(label).Set(0)
-		klog.InfoS("paused/stopped contending for primary DC Lease", "scope", label, "dc", e.a.opts.DCName)
+		klog.InfoS("paused/stopped contending for primary DC Lease", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 	}
 }
 
@@ -91,8 +93,18 @@ func (e *scopeElector) run(ctx context.Context) {
 		LockConfig: resourcelock.ResourceLockConfig{Identity: e.a.opts.DCName},
 	}
 	cfg := leaderelection.LeaderElectionConfig{
-		Lock:            lock,
-		ReleaseOnCancel: true,
+		Lock: lock,
+		// ReleaseOnCancel is deliberately false. Releasing on every elector stop
+		// turned routine agent lifecycle events (liveness restarts under control
+		// plane load, image rolls, SIGTERM at pod shutdown, contention pauses)
+		// into instant un-asked DC failovers: the release writes the Lease back
+		// with no holder and a one second duration, and a peer DC acquired it on
+		// its next two second retry tick. The identity here is the DC name, not
+		// the pod, so a restarted agent simply resumes renewing the Lease it
+		// already holds. The primary DC now moves in exactly two ways: the
+		// holder genuinely stops renewing and the Lease expires (real DC loss),
+		// or a coordinated handoff releases it once (releaseForHandoff).
+		ReleaseOnCancel: false,
 		LeaseDuration:   e.a.opts.Election.LeaseDuration,
 		RenewDeadline:   e.a.opts.Election.RenewDeadline,
 		RetryPeriod:     e.a.opts.Election.RetryPeriod,
@@ -101,20 +113,36 @@ func (e *scopeElector) run(ctx context.Context) {
 			OnStartedLeading: func(context.Context) {
 				e.a.metrics.IsPrimary.WithLabelValues(label).Set(1)
 				e.a.metrics.ElectionTransitions.WithLabelValues(label, "acquired").Inc()
-				klog.InfoS("this DC is now primary", "scope", label, "dc", e.a.opts.DCName)
+				klog.InfoS("this DC is now primary", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 			},
 			OnStoppedLeading: func() {
 				e.a.metrics.IsPrimary.WithLabelValues(label).Set(0)
 				e.a.metrics.ElectionTransitions.WithLabelValues(label, "lost").Inc()
-				klog.InfoS("this DC is no longer primary", "scope", label, "dc", e.a.opts.DCName)
+				klog.InfoS("this DC is no longer primary", "dcdr.scope", label, "dcdr.dc", e.a.opts.DCName)
 			},
 			OnNewLeader: func(id string) {
 				if id != e.a.opts.DCName && id != "" {
-					klog.InfoS("observed primary DC", "scope", label, "holder", id)
+					klog.InfoS("observed primary DC", "dcdr.scope", label, "dcdr.leaseHolder", id)
 				}
 			},
 		},
 	}
+	// Per-scope startup offset, deterministic in the scope name. After a restart
+	// (or a control plane recovery) every elector would otherwise wake on the
+	// same tick and their combined GET+PUT burst lands as one synchronized wave,
+	// which is exactly the load shape that overran the client rate limiter and
+	// starved renewals when ~19 scopes came up together. Spreading the start
+	// inside one RetryPeriod desynchronizes the fleet permanently, because each
+	// elector keeps its own phase from then on.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(e.scope.PrimaryLeaseName()))
+	offset := time.Duration(uint64(h.Sum32()) * uint64(e.a.opts.Election.RetryPeriod) / (1 << 32))
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(offset):
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -124,7 +152,7 @@ func (e *scopeElector) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(e.a.opts.Election.RetryPeriod):
+		case <-time.After(wait.Jitter(e.a.opts.Election.RetryPeriod, 0.5)):
 		}
 	}
 }

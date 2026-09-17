@@ -21,13 +21,14 @@ import (
 	"errors"
 	"net/http"
 
-	"open-cluster-management.io/dr-controlplane/pkg/agent"
+	"github.com/kluster-manager/dr-controlplane/pkg/agent"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func newCmdAgent() *cobra.Command {
@@ -48,6 +49,10 @@ func newCmdAgent() *cobra.Command {
 }
 
 func runAgent(ctx context.Context, opts agent.Options) error {
+	// The writer manager (controller-runtime) logs through logr; without this
+	// its first log attempt prints a "SetLogger was never called" stack trace.
+	ctrl.SetLogger(klog.NewKlogr())
+
 	cfg, err := opts.RESTConfig()
 	if err != nil {
 		return err
@@ -56,13 +61,37 @@ func runAgent(ctx context.Context, opts agent.Options) error {
 	if err != nil {
 		return err
 	}
+	// A second clientset over the same config: rest.Config is copied by value into
+	// each clientset, so this one carries its OWN rate limiter. The health Lease
+	// renewals and the observation watchdog run on it, out of reach of elector
+	// bursts (see agent.Options.ClientQPS for the incident this prevents).
+	auxCfg, err := opts.RESTConfig()
+	if err != nil {
+		return err
+	}
+	aux, err := kubernetes.NewForConfig(auxCfg)
+	if err != nil {
+		return err
+	}
 
 	reg := prometheus.NewRegistry()
 	m := agent.NewMetrics(reg, opts.DCName)
 
+	a := agent.New(opts, cs, aux, m)
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	// /healthz reports whether this agent can actually reach the coordination control
+	// plane, not merely whether the process is up. It used to answer "ok"
+	// unconditionally, which made an agent that could not talk to the control plane at
+	// all look perfectly healthy to the addon prober. See Agent.Healthy.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if !a.Healthy() {
+			http.Error(w, "coordination control plane unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
 	srv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -72,7 +101,6 @@ func runAgent(ctx context.Context, opts agent.Options) error {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	klog.InfoS("starting agent", "dc", opts.DCName, "namespace", opts.Namespace, "metricsAddr", opts.MetricsAddr)
-	a := agent.New(opts, cs, m)
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}

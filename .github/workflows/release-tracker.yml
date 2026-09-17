@@ -1,0 +1,55 @@
+name: release-tracker
+
+on:
+  pull_request:
+    types: [closed]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-release-tracker
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Only release automation stamps a `Release-tracker:` trailer on a commit
+      # body. Ordinary merges carry none, so detect it up front and skip the rest
+      # of the job. Without this guard the LGTM app token step below runs on every
+      # merge and fails the workflow whenever the app is not configured for the org.
+      - name: Detect release tracker
+        id: tracker
+        run: |
+          url="$(git show -s --format=%b | sed -n 's/^Release-tracker:[[:space:]]*//p' | tr -d '\r\t' | head -1)"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          if [ -z "${url}" ]; then
+            echo "Release-tracker url not found, nothing to update."
+          else
+            echo "Release tracker: ${url}"
+          fi
+
+      - name: Generate LGTM App token
+        id: lgtm-app-token
+        if: steps.tracker.outputs.url != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.LGTM_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LGTM_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: CHANGELOG
+          permission-pull-requests: write
+
+      - name: Update release tracker
+        if: steps.tracker.outputs.url != ''
+        env:
+          GITHUB_USER: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ steps.lgtm-app-token.outputs.token }}
+        run: |
+          ./hack/scripts/update-release-tracker.sh
