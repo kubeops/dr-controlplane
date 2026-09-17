@@ -40,9 +40,15 @@ All Make targets run inside `ghcr.io/appscode/golang-dev`, so Docker must be run
 - `make fmt`, `make lint`, `make test` (alias for `unit-tests`).
 - `make verify` runs `verify-gen verify-modules`; `go mod tidy && go mod vendor` must leave the tree clean.
 - `make container` builds PROD, DBG, and UBI images; `make push`, `make docker-manifest`, `make release` publish.
+  `make release` requires `APPSCODE_ENV=prod` and a git tag; `make qa` is the untagged, non prod equivalent.
 - `make install` / `make uninstall` Helm lifecycle into namespace `dc-failover`.
 - `make add-license` / `make check-license` manage the `ltag` headers.
 - `make run` runs `go run ./cmd/dr-controlplane agent --dc-name=dc-a` against `$KUBECONFIG` for quick local iteration.
+
+GitHub Actions live in `.github/workflows/`: `ci.yml` runs `make ci` on every PR, `release.yml` runs
+`make release` on a tag push, and `release-tracker.yml` reports a merged release PR back to the
+`Release-tracker:` PR named in the commit body. The tracker is dormant here: this repo is not part of
+an automated release train, so no commit carries that trailer and the job exits after its detect step.
 
 Run a single test with a local Go toolchain:
 
