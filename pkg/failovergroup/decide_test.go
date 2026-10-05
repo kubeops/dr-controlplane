@@ -73,6 +73,13 @@ func TestDecideRootGroup(t *testing.T) {
 		t.Fatalf("stale report must not be ready: %+v", d)
 	}
 
+	// No member has reported yet: not ready, even though the Lease has a holder.
+	g = group("data", "", nil)
+	d = Decide(g, index(g), lease("dc-b", true, ""), now)
+	if d.Phase != appsv1.FailoverGroupPhaseWaitingForMembers || d.ActiveDC != "" {
+		t.Fatalf("a group with no reported members must not become active: %+v", d)
+	}
+
 	// No Lease holder yet.
 	g = group("data", "", nil)
 	d = Decide(g, index(g), LeaseView{}, now)
@@ -115,6 +122,30 @@ func TestDecideDependentPlannedSwitchover(t *testing.T) {
 	d := Decide(app, index(root, app), lease("dc-a", true, "dc-a"), now)
 	if d.FollowDC != "dc-b" || d.SwitchoverTo != "dc-b" || d.ActiveDC != "dc-a" {
 		t.Fatalf("dependent must be switched over to dc-b: %+v", d)
+	}
+}
+
+func TestDecideDependentNotSwitchedOverUntilReady(t *testing.T) {
+	// Bootstrap: the dependent's Lease was won by dc-a while its database is still
+	// provisioning; the dependency is active on dc-b. Follow dc-b, but do not switch
+	// a database over that is not serving yet.
+	root := group("data", "dc-b", nil)
+	app := group("billing", "", []string{"data"}, member("pg2", "dc-a", false, time.Second))
+	d := Decide(app, index(root, app), lease("dc-a", true, ""), now)
+	if d.FollowDC != "dc-b" || d.SwitchoverTo != "" || d.ActiveDC != "" {
+		t.Fatalf("a not-ready dependent must not be switched over: %+v", d)
+	}
+
+	// No member reported at all: same.
+	app = group("billing", "", []string{"data"})
+	if d := Decide(app, index(root, app), lease("dc-a", true, ""), now); d.SwitchoverTo != "" {
+		t.Fatalf("a dependent with no reported members must not be switched over: %+v", d)
+	}
+
+	// Once ready on dc-a, it is switched over to follow dc-b.
+	app = group("billing", "", []string{"data"}, member("pg2", "dc-a", true, time.Second))
+	if d := Decide(app, index(root, app), lease("dc-a", true, "dc-b"), now); d.SwitchoverTo != "dc-b" {
+		t.Fatalf("a ready dependent must be switched over: %+v", d)
 	}
 }
 

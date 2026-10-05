@@ -121,7 +121,11 @@ func Decide(g *appsv1.FailoverGroup, groups map[string]*appsv1.FailoverGroup, le
 		}
 		d.Target = target
 		d.FollowDC = target
-		if lease.Exists && lease.Holder != "" && lease.Holder != target && lease.HolderAlive {
+		// Only a group that is serving on its live holder is switched over. A group
+		// that is still provisioning, or not ready on the holder, is left to become
+		// ready first; follow-dc already keeps other DCs from acquiring its Lease.
+		if lease.Exists && lease.Holder != "" && lease.Holder != target && lease.HolderAlive &&
+			len(g.Status.Members) > 0 && len(membersNotReady(g.Status.Members, lease.Holder, now)) == 0 {
 			d.SwitchoverTo = target
 		}
 	}
@@ -129,6 +133,14 @@ func Decide(g *appsv1.FailoverGroup, groups map[string]*appsv1.FailoverGroup, le
 	if lease.Holder != d.Target {
 		d.Phase = appsv1.FailoverGroupPhaseWaitingForMembers
 		d.Message = fmt.Sprintf("waiting for the group's Lease to move from %q to %s", lease.Holder, d.Target)
+		return d
+	}
+	// A group whose members have not reported yet is not ready: the engine
+	// operator may simply not have observed them yet, and publishing activeDC then
+	// would release dependent groups before anything is serving.
+	if len(g.Status.Members) == 0 {
+		d.Phase = appsv1.FailoverGroupPhaseWaitingForMembers
+		d.Message = fmt.Sprintf("no member has reported readiness on %s yet", d.Target)
 		return d
 	}
 	if notReady := membersNotReady(g.Status.Members, d.Target, now); len(notReady) > 0 {
