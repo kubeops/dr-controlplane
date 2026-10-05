@@ -1286,8 +1286,10 @@ kmodules.xyz/custom-resources v0.34.0 h1:ljkIYzIq0A3Awj87kkpuYqS9aifuyR3Hr9q2OVK
 kmodules.xyz/custom-resources v0.34.0/go.mod h1:pcA/n/CnrycjKCRNtU9Z+l5svhzFncLY2Kn9pqeXDVs=
 kmodules.xyz/monitoring-agent-api v0.34.1 h1:0ANZgff50xF9D9cFng1NBVmSeLwiYPsZKiFLcxAY9bQ=
 kmodules.xyz/monitoring-agent-api v0.34.1/go.mod h1:XFDfMHDZQeNEPdTDeDr4M0dT4UCWs+4IYzgHw7JDlms=
-kubeops.dev/petset v0.2.1-0.20260930041435-35cae4bf4113 h1:cKG8YEOhICW58g3Ow80vSjeM99s2lNddSA/szNvy9sw=
-kubeops.dev/petset v0.2.1-0.20260930041435-35cae4bf4113/go.mod h1:zb++ZwjAon+cueexxhRSSxzJnNX1J/scqvDrGgeRHcQ=
+kubeops.dev/petset v0.1.1-0.20260930060225-e996677a5e2f h1:yvL2I4xwL8q+YsVZp1/pdPtTYdk+MiOFM0u9fTxghzI=
+kubeops.dev/petset v0.1.1-0.20260930060225-e996677a5e2f/go.mod h1:zb++ZwjAon+cueexxhRSSxzJnNX1J/scqvDrGgeRHcQ=
+kubeops.dev/petset v0.1.1-0.20261005062345-a44e8d0f3fab h1:AP3yQ5ivSI3sSEYYEajZg6HOeIvwSIwitR3Rw/VtkkI=
+kubeops.dev/petset v0.1.1-0.20261005062345-a44e8d0f3fab/go.mod h1:zb++ZwjAon+cueexxhRSSxzJnNX1J/scqvDrGgeRHcQ=
 nhooyr.io/websocket v1.8.7/go.mod h1:B70DZP8IakI65RVQ51MsWP/8jndNma26DVA/nFSCgW0=
 open-cluster-management.io/addon-framework v1.0.0 h1:ejTk4hPAJnwCSxQhY/tVDPg3SeH91lVfWqSaJcYiKwg=
 open-cluster-management.io/addon-framework v1.0.0/go.mod h1:Gw9zRGvuNJJ3XhTYanIuA7FFFw0EjtoE74l5OBZCZf8=
