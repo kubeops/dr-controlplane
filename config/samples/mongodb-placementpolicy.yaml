@@ -13,9 +13,8 @@ spec:
       sliceName: kubedb-geo
     failoverPolicy:
       mode: TwoDC
-      trigger:
-        scope: Group
-        group: orders
+      failoverGroupRef:
+        name: orders          # follows the primary-dc-orders Lease
     distributionRules:
       - clusterName: dc-a
         replicaIndices: [0, 1]

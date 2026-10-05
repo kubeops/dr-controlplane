@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	appsv1 "kubeops.dev/petset/apis/apps/v1"
 )
@@ -49,7 +50,7 @@ func witness(c string) appsv1.DistributionRule {
 }
 
 func TestDeriveTwoDCWithArbiter(t *testing.T) {
-	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC, Trigger: appsv1.FailoverTrigger{Scope: appsv1.FailoverScopeGlobal}}
+	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC}
 	topo, errs := Derive([]*appsv1.PlacementPolicy{pp("pg", fp, member("dc-a"), member("dc-b"), arbiter("dc-c"))})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
@@ -71,7 +72,7 @@ func TestDeriveTwoDCWithArbiter(t *testing.T) {
 
 func TestDeriveGroupWitness(t *testing.T) {
 	// MongoDB style: two data Members plus a data bearing Witness, group scoped.
-	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC, Trigger: appsv1.FailoverTrigger{Scope: appsv1.FailoverScopeGroup, Group: "orders"}}
+	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC, FailoverGroupRef: &core.LocalObjectReference{Name: "orders"}}
 	topo, errs := Derive([]*appsv1.PlacementPolicy{pp("mongo", fp, member("dc-a"), member("dc-b"), witness("dc-c"))})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
@@ -89,7 +90,7 @@ func TestDeriveGroupWitness(t *testing.T) {
 }
 
 func TestDeriveRejectsSingleMember(t *testing.T) {
-	fp := &appsv1.FailoverPolicy{Trigger: appsv1.FailoverTrigger{Scope: appsv1.FailoverScopeGlobal}}
+	fp := &appsv1.FailoverPolicy{}
 	_, errs := Derive([]*appsv1.PlacementPolicy{pp("bad", fp, member("dc-a"), arbiter("dc-c"))})
 	if len(errs) == 0 {
 		t.Fatalf("expected a validation error for a single Member DC/DR config")

@@ -63,6 +63,14 @@ import (
 //     of handoff state or anything else. The named DC contends (this is how it
 //     holds/renews the Lease through the pin), unless standby-hold above already
 //     vetoed it.
+//   - The Member named by an in progress handoff contends eagerly, ahead of
+//     follow-dc below, so an explicit switchover can never be stalled by it.
+//   - follow-dc (leases.AnnFollowDC, set by the FailoverGroup controller on a
+//     dependent group's Lease) defers every Member that is neither the named
+//     DC nor the current holder, so the group only moves once its dependencies
+//     are ready. followIsMember guards a stale value the same way handoff does:
+//     a follow-dc naming a non-Member is ignored rather than leaving the scope
+//     with no possible primary.
 //   - Normally (no pin, no hold) a Member contends.
 //   - During a handoff to another Member, a Member pauses so the target can
 //     acquire. If this DC currently holds the Lease, the reconcile additionally
@@ -74,7 +82,7 @@ import (
 //     removed from the set mid handoff) is ignored. Otherwise every Member would
 //     pause for a target that can never acquire, leaving the scope with no
 //     primary at all.
-func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIsMember bool, overrideHold string, standbyHold bool) bool {
+func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIsMember bool, overrideHold string, standbyHold bool, followDC string, followIsMember bool) bool {
 	if !isMember {
 		return false
 	}
@@ -83,6 +91,12 @@ func desiredContend(isMember bool, handoffTo, holder, dc string, handoffTargetIs
 	}
 	if overrideHold != "" {
 		return overrideHold == dc
+	}
+	if handoffTo == dc && handoffTargetIsMember {
+		return true
+	}
+	if followDC != "" && followIsMember && followDC != dc && holder != dc {
+		return false
 	}
 	if handoffTo == "" || !handoffTargetIsMember || handoffTo == dc {
 		return true
