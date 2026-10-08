@@ -167,6 +167,5 @@ if c.IsLocalDCPrimary(leases.GlobalScope) {
 
 ## License
 
-Source code in this repository, Binaries, Docker images and Charts produced by the
-build process are licensed under the AppsCode Free Trial License 1.0.0. See
-[LICENSE.md](LICENSE.md).
+This project is licensed under the Apache License 2.0. See
+[LICENSE](LICENSE).
