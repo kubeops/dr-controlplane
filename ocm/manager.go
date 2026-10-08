@@ -154,6 +154,8 @@ func RunManagerController(opts AgentOptions) error {
 		"starting addon manager",
 		"addon", AddonName,
 		"agentInstallNamespace", opts.InstallNamespace,
+		"agentRegistryFQDN", opts.RegistryFQDN,
+		"agentImageRegistry", opts.ImageRegistry,
 		"agentImage", opts.ImageRepository,
 		"agentImageTag", opts.ImageTag,
 		"agentImagePullSecrets", opts.ImagePullSecrets,

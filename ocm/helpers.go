@@ -70,7 +70,9 @@ func getValues(opts AgentOptions, restConfig *rest.Config, _ *certstore.CertStor
 			// WithAgentInstallNamespace pins to opts.InstallNamespace.
 			"namespace":       opts.InstallNamespace,
 			"createNamespace": opts.CreateNamespace,
+			"registryFQDN":    opts.RegistryFQDN,
 			"image": map[string]interface{}{
+				"registry":   opts.ImageRegistry,
 				"repository": opts.ImageRepository,
 				"tag":        opts.ImageTag,
 			},

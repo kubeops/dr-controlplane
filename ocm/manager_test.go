@@ -31,7 +31,9 @@ import (
 
 func testOptions() AgentOptions {
 	opts := NewAgentOptions()
-	opts.ImageRepository = "registry.example.com/dr-controlplane"
+	opts.RegistryFQDN = "registry.example.com"
+	opts.ImageRegistry = ""
+	opts.ImageRepository = "dr-controlplane"
 	opts.ImageTag = "v0.0.1-test"
 	opts.ImagePullSecrets = []string{"regcred", "regcred-2"}
 	return opts

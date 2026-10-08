@@ -38,8 +38,10 @@ const (
 	// run there or its pods never get past ContainerCreating.
 	defaultAgentInstallNamespace = "dc-failover"
 
-	// defaultAgentImageRepository is the image the agent Deployment runs.
-	defaultAgentImageRepository = "ghcr.io/appscode/dr-controlplane"
+	// The agent image is ${registryFQDN}/${registry}/${repository}:${tag}.
+	defaultAgentRegistryFQDN    = "ghcr.io"
+	defaultAgentImageRegistry   = "appscode"
+	defaultAgentImageRepository = "dr-controlplane"
 
 	// markerFenceTTL is the TTL the database data plane (pg-coordinator) applies to
 	// the active DC marker ConfigMap this agent projects. The data plane fails
@@ -94,9 +96,12 @@ type AgentOptions struct {
 	// with a warm hub observation and take over within the writer election
 	// LeaseDuration. Extra replicas add no quorum weight; only etcd members vote.
 	Replicas int
-	// ImageRepository, ImageTag and ImagePullSecrets describe where the spoke pulls
-	// the dr-controlplane image from. ImagePullSecrets is a list of Secret names
-	// that must exist in InstallNamespace on each spoke.
+	// RegistryFQDN, ImageRegistry, ImageRepository, ImageTag and ImagePullSecrets
+	// describe where the spoke pulls the dr-controlplane image from, as
+	// ${RegistryFQDN}/${ImageRegistry}/${ImageRepository}:${ImageTag}. ImagePullSecrets
+	// is a list of Secret names that must exist in InstallNamespace on each spoke.
+	RegistryFQDN     string
+	ImageRegistry    string
 	ImageRepository  string
 	ImageTag         string
 	ImagePullSecrets []string
@@ -122,6 +127,8 @@ func NewAgentOptions() AgentOptions {
 		CoordKubeconfigSourceSecret:     envOr("COORD_KUBECONFIG_SOURCE_SECRET", "multicluster-controlplane-kubeconfig"),
 		CoordExternalEndpoint:           os.Getenv("COORD_EXTERNAL_ENDPOINT"),
 		CoordKubeconfigMirrorNamespaces: envListOr("COORD_KUBECONFIG_MIRROR_NAMESPACES", nil),
+		RegistryFQDN:                    envOr("AGENT_REGISTRY_FQDN", defaultAgentRegistryFQDN),
+		ImageRegistry:                   envOr("AGENT_IMAGE_REGISTRY", defaultAgentImageRegistry),
 		ImageRepository:                 envOr("AGENT_IMAGE_REPOSITORY", defaultAgentImageRepository),
 		ImageTag:                        os.Getenv("AGENT_IMAGE_TAG"),
 		Replicas:                        envIntOr("AGENT_REPLICAS", 1),
@@ -150,8 +157,12 @@ func (o *AgentOptions) AddFlags(fs *pflag.FlagSet) {
 		"External URL agents must reach the coordination control plane on, e.g. https://10.0.0.1:9443. Empty disables copying the credential.")
 	fs.StringVar(&o.CoordKubeconfigSecret, "agent-coord-kubeconfig-secret", o.CoordKubeconfigSecret,
 		"Secret (key: kubeconfig) in the agent install namespace holding the coordination control plane credential. Empty uses the spoke in cluster config.")
+	fs.StringVar(&o.RegistryFQDN, "agent-registry-fqdn", o.RegistryFQDN,
+		"Docker registry fqdn the agent image is pulled from on managed clusters, for example ghcr.io.")
+	fs.StringVar(&o.ImageRegistry, "agent-image-registry", o.ImageRegistry,
+		"Registry path (organization) under the registry fqdn, for example appscode. May be empty.")
 	fs.StringVar(&o.ImageRepository, "agent-image-repository", o.ImageRepository,
-		"Image repository for the agent Deployment on managed clusters.")
+		"Image repository name for the agent Deployment on managed clusters.")
 	fs.IntVar(&o.Replicas, "agent-replicas", o.Replicas,
 		"Agent pod replicas per spoke. Extra replicas are pod crash insurance only; they share the DC identity and add no quorum weight.")
 	fs.StringVar(&o.ImageTag, "agent-image-tag", o.ImageTag,
