@@ -143,8 +143,8 @@ It cannot renew, so it never holds (or loses) the Lease. On a real three data ce
 ## Helm
 
 ```
-helm lint charts/dr-controlplane --set agent.dcName=dc-a
-helm template dr charts/dr-controlplane --set agent.dcName=dc-a   # inspect rendered manifests
+helm lint ../installer/charts/dr-controlplane --set agent.dcName=dc-a
+helm template dr ../installer/charts/dr-controlplane --set agent.dcName=dc-a   # inspect rendered manifests
 ```
 
 Install into Kind for a fuller test:

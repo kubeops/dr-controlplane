@@ -28,7 +28,7 @@ dr-controlplane version
 - `pkg/topology/` `topology.go` (pure derivation of Member/Arbiter/Witness sets from PlacementPolicies, unit tested) and `controller.go` (dynamic informer on PlacementPolicy, ensures the Leases).
 - `pkg/client/` the consumer library: a Lease informer that exposes the current primary DC per scope and fires callbacks on change.
 - The PlacementPolicy extension (`FailoverPolicy`, `DistributionRule.Role`) lives in `kubeops.dev/petset/apis/apps/v1`, consumed here through a local replace; it is not defined in this repo.
-- `charts/dr-controlplane/` Helm chart: etcd quorum, the config only control plane (`controlplane server --controlplane-config-dir` with an external etcd `ocmconfig.yaml`), the agent (one install per DC), the controller.
+- The Helm chart lives in the `kubeops.dev/installer` repo at `charts/dr-controlplane/` (`make install` expects a checkout at `../installer`): etcd quorum, the config only control plane (`controlplane server --controlplane-config-dir` with an external etcd `ocmconfig.yaml`), the agent (one install per DC), the controller.
 - `Dockerfile.in` (PROD distroless), `Dockerfile.dbg` (debian + dlv), `Dockerfile.ubi` (Red Hat), `hack/`, `Makefile` are the AppsCode build harness. `vendor/` is checked in.
 
 ## Common commands
