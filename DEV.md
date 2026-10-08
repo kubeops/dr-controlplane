@@ -59,7 +59,7 @@ go run ./cmd/dr-controlplane agent --dc-name=dc-a --kubeconfig=$HOME/.kube/confi
 
 The vendor directory is checked in. `make verify` (specifically `verify-modules`) fails the build if `go mod tidy && go mod vendor` would change anything, so run both after touching dependencies and commit the result.
 
-License headers are managed by `ltag` against `hack/license/`. Add the AppsCode Free Trial header to new files with `make add-license`; `make check-license` (part of `make ci`) enforces it.
+License headers are managed by `ltag` against `hack/license/`. Add the Apache 2.0 header to new files with `make add-license`; `make check-license` (part of `make ci`) enforces it.
 
 ## Adding a subcommand
 

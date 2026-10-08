@@ -59,7 +59,7 @@ go test ./pkg/topology/... -run TestDeriveTwoDCWithArbiter -v
 ## Conventions
 
 - Module path is `kubeops.dev/dr-controlplane`; keep imports on it. The `dr.open-cluster-management.io/*` Lease annotation keys in `pkg/leases` are unrelated to the module path and must not be renamed with it.
-- License is the **AppsCode Free Trial License 1.0.0** (`LICENSE.md`). New files need the standard "Copyright AppsCode Inc. and Contributors" header; `hack/license/` holds the templates and `make add-license` stamps them.
+- License is **Apache 2.0** (`LICENSE`). New files need the standard "Copyright AppsCode Inc. and Contributors" header; `hack/license/` holds the templates and `make add-license` stamps them.
 - Logging is `k8s.io/klog/v2` everywhere. Use `klog.InfoS` / `klog.ErrorS` structured logging, not `fmt` or other loggers.
 - The vendor directory is checked in; `verify-modules` fails if `go mod tidy && go mod vendor` is not clean.
 - `kubeops.dev/petset` is a local replace (`../../kubeops.dev/petset`), so keep the petset checkout beside this repo in the GOPATH layout. Editing the PlacementPolicy API means editing petset's `apis/apps/v1` and its `zz_generated.deepcopy.go`.
