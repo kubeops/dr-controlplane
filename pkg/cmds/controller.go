@@ -17,12 +17,17 @@ limitations under the License.
 package cmds
 
 import (
+	"github.com/kluster-manager/dr-controlplane/pkg/failovergroup"
 	"github.com/kluster-manager/dr-controlplane/pkg/leases"
 	"github.com/kluster-manager/dr-controlplane/pkg/topology"
 
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/restmapper"
+	"k8s.io/klog/v2"
 )
 
 func newCmdController() *cobra.Command {
@@ -35,7 +40,7 @@ func newCmdController() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:               "controller",
-		Short:             "Run the topology controller (ensures one primary DC Lease per scope)",
+		Short:             "Run the topology controller (ensures one primary DC Lease per scope) and the FailoverGroup controller",
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			hubCfg, err := restConfig(hubKubeconfig)
@@ -66,6 +71,16 @@ func newCmdController() *cobra.Command {
 				}
 				return cluster
 			}
+			dc, err := discovery.NewDiscoveryClientForConfig(hubCfg)
+			if err != nil {
+				return err
+			}
+			mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
+			go func() {
+				if err := failovergroup.New(hub, coord, mapper, namespace).Run(cmd.Context()); err != nil {
+					klog.ErrorS(err, "failover group controller stopped")
+				}
+			}()
 			return topology.New(hub, coord, namespace, regionOf, requireSpread).Run(cmd.Context())
 		},
 	}

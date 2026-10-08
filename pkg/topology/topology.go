@@ -83,13 +83,7 @@ func (t *Topology) add(pp *appsv1.PlacementPolicy) error {
 		return fmt.Errorf("PlacementPolicy %q: %w", pp.Name, err)
 	}
 
-	var scope leases.Scope
-	switch csc.FailoverPolicy.Trigger.Scope {
-	case appsv1.FailoverScopeGroup:
-		scope = leases.GroupScope(csc.FailoverPolicy.Trigger.Group)
-	default:
-		scope = leases.GlobalScope
-	}
+	scope := ScopeOf(csc.FailoverPolicy)
 
 	name := scope.PrimaryLeaseName()
 	st := t.Scopes[name]
@@ -127,6 +121,16 @@ func Derive(pps []*appsv1.PlacementPolicy) (*Topology, []error) {
 		sort.Strings(st.Witnesses)
 	}
 	return t, errs
+}
+
+// ScopeOf returns the failover scope a FailoverPolicy selects: the named
+// FailoverGroup's primary-dc-<group> Lease, or the global primary-dc Lease when
+// failoverGroupRef is unset.
+func ScopeOf(fp *appsv1.FailoverPolicy) leases.Scope {
+	if fp != nil && fp.FailoverGroupRef != nil && fp.FailoverGroupRef.Name != "" {
+		return leases.GroupScope(fp.FailoverGroupRef.Name)
+	}
+	return leases.GlobalScope
 }
 
 // ScopeAnnotationValue renders a scope for the AnnScope annotation.

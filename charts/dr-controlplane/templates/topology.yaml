@@ -18,8 +18,23 @@ metadata:
     {{- include "dr.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["apps.k8s.appscode.com"]
-    resources: ["placementpolicies"]
+    resources: ["placementpolicies", "failovergroups"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps.k8s.appscode.com"]
+    resources: ["failovergroups/status"]
+    verbs: ["get", "patch", "update"]
+  # FailoverGroup members: a dependent group's databases are asked to follow their
+  # dependencies through the engine's dr.kubedb.com/switchover-to annotation.
+  - apiGroups: ["kubedb.com"]
+    resources: ["*"]
+    verbs: ["get", "patch"]
+  # The controller confirms the Lease namespace exists before managing Leases. On a
+  # separate coordination control plane its kubeconfig carries that right; when the
+  # hub itself holds the Leases (no coordKubeconfigSecret) this ServiceAccount needs it.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: [{{ $ns | quote }}]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

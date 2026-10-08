@@ -70,6 +70,16 @@ const (
 	// A43(c): break glass itself stays manual only, this annotation is how the
 	// pin becomes visible to DCs that cannot read another spoke's local state.
 	AnnOverrideHold = "dr.open-cluster-management.io/override-hold"
+
+	// AnnFollowDC orders a dependent FailoverGroup behind its dependencies. The
+	// FailoverGroup controller sets it on the group's primary DC Lease to the data
+	// center where every dependency is active and ready. A Member that is neither
+	// the named DC nor the current holder does not contend, so after a DC loss the
+	// group's Lease is only acquired once its dependencies have landed. The holder
+	// is never forced out by it; a planned move still goes through a switchover.
+	// Unset (the default, and for every group without dependencies) leaves
+	// contention unchanged.
+	AnnFollowDC = "dr.open-cluster-management.io/follow-dc"
 )
 
 // OverrideConfigMapSuffix names the human owned break glass override ConfigMap

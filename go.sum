@@ -1286,8 +1286,8 @@ kmodules.xyz/custom-resources v0.34.0 h1:ljkIYzIq0A3Awj87kkpuYqS9aifuyR3Hr9q2OVK
 kmodules.xyz/custom-resources v0.34.0/go.mod h1:pcA/n/CnrycjKCRNtU9Z+l5svhzFncLY2Kn9pqeXDVs=
 kmodules.xyz/monitoring-agent-api v0.34.1 h1:0ANZgff50xF9D9cFng1NBVmSeLwiYPsZKiFLcxAY9bQ=
 kmodules.xyz/monitoring-agent-api v0.34.1/go.mod h1:XFDfMHDZQeNEPdTDeDr4M0dT4UCWs+4IYzgHw7JDlms=
-kubeops.dev/petset v0.1.1-0.20260709161836-19b3570c41ab h1:0aouI9IIIoHDwIOmLjgr0YXMab9f833ei8neEBPuG48=
-kubeops.dev/petset v0.1.1-0.20260709161836-19b3570c41ab/go.mod h1:zb++ZwjAon+cueexxhRSSxzJnNX1J/scqvDrGgeRHcQ=
+kubeops.dev/petset v0.2.1-0.20261008042136-e3473325563b h1:FuCSJPrNx7+1tqQgRpYNZ3nNbey+ggU/Pmg+30cphPA=
+kubeops.dev/petset v0.2.1-0.20261008042136-e3473325563b/go.mod h1:zb++ZwjAon+cueexxhRSSxzJnNX1J/scqvDrGgeRHcQ=
 nhooyr.io/websocket v1.8.7/go.mod h1:B70DZP8IakI65RVQ51MsWP/8jndNma26DVA/nFSCgW0=
 open-cluster-management.io/addon-framework v1.0.0 h1:ejTk4hPAJnwCSxQhY/tVDPg3SeH91lVfWqSaJcYiKwg=
 open-cluster-management.io/addon-framework v1.0.0/go.mod h1:Gw9zRGvuNJJ3XhTYanIuA7FFFw0EjtoE74l5OBZCZf8=

@@ -310,6 +310,8 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	holder := holderOf(l)
 	isMember := leases.ContainsMember(members, a.opts.DCName)
 	handoffTargetIsMember := handoffTo != "" && leases.ContainsMember(members, handoffTo)
+	followDC := l.Annotations[leases.AnnFollowDC]
+	followIsMember := followDC != "" && leases.ContainsMember(members, followDC)
 
 	// standbyHold is never on the Lease (see standbyhold.go); it is this DC's
 	// own cached read of its local standby-hold ConfigMap, refreshed on the
@@ -323,7 +325,7 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	// replicas fall through to the holders update below so their observation
 	// stays warm for takeover.
 	if a.isWriter.Load() {
-		contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold)
+		contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold, followDC, followIsMember)
 		a.electorFor(scope, l.Name).setDesired(contend)
 
 		// A coordinated handoff is the only path that actively moves the Lease: the

@@ -26,7 +26,7 @@ The decision is a normal `coordination.k8s.io` Lease in the `dc-failover`
 namespace, so any client, controller, or operator can read it with no custom
 protocol:
 
-- one primary DC Lease per trigger scope (`primary-dc`, or `primary-dc-<group>`);
+- one primary DC Lease per failover group (`primary-dc`, or `primary-dc-<group>`);
   its `holderIdentity` is the current primary data center, and a change is a failover.
 - one health Lease per data center (`dc-health-<dc>`), renewed by that DC's agent.
 
@@ -85,8 +85,8 @@ Add `failoverPolicy` and per rule `role` to the workload's PlacementPolicy
 clusterSpreadConstraint:
   failoverPolicy:
     mode: TwoDC
-    trigger:
-      scope: Global          # or Group, with a group name
+    failoverGroupRef:        # omit to follow the global primary-dc Lease
+      name: orders           # follows the primary-dc-orders Lease
   distributionRules:
     - clusterName: dc-a
       replicaIndices: [0]
@@ -101,6 +101,31 @@ clusterSpreadConstraint:
 
 The controller turns this into the matching primary DC Lease. See
 `config/samples` for Postgres (Arbiter) and MongoDB (Witness) examples.
+
+## Order failover groups
+
+A `FailoverGroup` (`apps.k8s.appscode.com/v1`, cluster scoped) with the same name
+as the `failoverGroupRef` orders that group behind others and publishes where it
+is active. The Lease still decides failover; the object is optional and deleting
+it never stops a failover.
+
+```yaml
+apiVersion: apps.k8s.appscode.com/v1
+kind: FailoverGroup
+metadata:
+  name: billing
+spec:
+  dependsOn: [orders]   # billing moves only once orders is ready on the new DC
+```
+
+- `status.activeDC` moves only once every member reports ready there, and for a
+  dependent group, once every dependency is active there. Each engine operator
+  reports its own databases in `status.members`.
+- After a DC loss, the controller sets `dr.open-cluster-management.io/follow-dc`
+  on the dependent group's Lease; agents of other DCs do not contend for it until
+  the dependencies are ready.
+- After a planned switchover of a dependency, the controller asks the dependent
+  group's databases to follow with `dr.kubedb.com/switchover-to`.
 
 ## Operate
 
