@@ -21,7 +21,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/kluster-manager/dr-controlplane/pkg/agent"
+	"kubeops.dev/dr-controlplane/pkg/agent"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

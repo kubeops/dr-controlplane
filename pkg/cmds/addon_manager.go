@@ -17,7 +17,7 @@ limitations under the License.
 package cmds
 
 import (
-	"github.com/kluster-manager/dr-controlplane/ocm"
+	"kubeops.dev/dr-controlplane/ocm"
 
 	"github.com/spf13/cobra"
 )

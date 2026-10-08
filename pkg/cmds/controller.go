@@ -17,9 +17,9 @@ limitations under the License.
 package cmds
 
 import (
-	"github.com/kluster-manager/dr-controlplane/pkg/failovergroup"
-	"github.com/kluster-manager/dr-controlplane/pkg/leases"
-	"github.com/kluster-manager/dr-controlplane/pkg/topology"
+	"kubeops.dev/dr-controlplane/pkg/failovergroup"
+	"kubeops.dev/dr-controlplane/pkg/leases"
+	"kubeops.dev/dr-controlplane/pkg/topology"
 
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/discovery"

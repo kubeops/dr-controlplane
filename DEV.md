@@ -7,7 +7,7 @@ What you need to know to work on this repo. For the big picture read `DESIGN.md`
 - Go 1.24+ for a local toolchain (`go build`, `go test`, `go vet`).
 - Docker, because the `make` targets run inside `ghcr.io/appscode/golang-dev` (which carries `goimports`, `golangci-lint`, `ltag`, `shfmt`, and the cross compilers).
 - `helm` and `kind` for chart work and local clusters.
-- A checkout of `kubeops.dev/petset` next to this repo. The layout is `~/go/src/github.com/kluster-manager/dr-controlplane` and `~/go/src/kubeops.dev/petset`, so the local replace `../../kubeops.dev/petset` resolves.
+- A checkout of `kubeops.dev/petset` next to this repo. The layout is `~/go/src/kubeops.dev/dr-controlplane` and `~/go/src/kubeops.dev/petset`, so the local replace `../../kubeops.dev/petset` resolves.
 
 ## Repository layout
 

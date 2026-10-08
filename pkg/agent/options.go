@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kluster-manager/dr-controlplane/pkg/leases"
+	"kubeops.dev/dr-controlplane/pkg/leases"
 
 	"github.com/spf13/pflag"
 	"k8s.io/client-go/rest"

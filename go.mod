@@ -1,4 +1,4 @@
-module github.com/kluster-manager/dr-controlplane
+module kubeops.dev/dr-controlplane
 
 go 1.25.0
 

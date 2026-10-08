@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/kluster-manager/dr-controlplane/pkg/leases"
+	"kubeops.dev/dr-controlplane/pkg/leases"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

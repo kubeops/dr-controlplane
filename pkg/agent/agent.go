@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kluster-manager/dr-controlplane/pkg/leases"
+	"kubeops.dev/dr-controlplane/pkg/leases"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/client-go/informers"

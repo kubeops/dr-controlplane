@@ -29,7 +29,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/kluster-manager/dr-controlplane/ocm/secretfs"
+	"kubeops.dev/dr-controlplane/ocm/secretfs"
 
 	cert "gomodules.xyz/cert"
 	"gomodules.xyz/cert/certstore"

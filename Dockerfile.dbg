@@ -16,7 +16,7 @@ FROM ghcr.io/appscode/dlv:1.25
 
 FROM {ARG_FROM}
 
-LABEL org.opencontainers.image.source https://github.com/kluster-manager/dr-controlplane
+LABEL org.opencontainers.image.source https://github.com/kubeops/dr-controlplane
 
 RUN set -x \
   && apt-get update \
