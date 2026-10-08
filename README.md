@@ -48,10 +48,10 @@ Arbiter or Witness) and ThreeDC (three Members, any can be primary).
 
 ## Install
 
-Install etcd, the control plane, and the topology controller once:
+Install etcd, the control plane, and the topology controller once (the chart is in the `kubeops.dev/installer` repo, checked out beside this one):
 
 ```
-helm install dr charts/dr-controlplane \
+helm install dr ../installer/charts/dr-controlplane \
   --set agent.enabled=false \
   --set controlplane.image=<your-ocm-control-plane-image> \
   --set controlplane.externalHostname=dc-failover.example.com
@@ -67,13 +67,13 @@ server URL, so cross replica failover happens at the load balancer.
 Install the agent once per data center:
 
 ```
-helm install dr-dc-a charts/dr-controlplane \
+helm install dr-dc-a ../installer/charts/dr-controlplane \
   --set etcd.deploy=false --set controlplane.enabled=false --set topology.enabled=false \
   --set agent.dcName=dc-a --set agent.coordKubeconfigSecret=coord-kubeconfig
 ```
 
 For real multi data center production, set `etcd.deploy=false` and run one external
-etcd member per data center. See `charts/dr-controlplane/values.yaml` for all
+etcd member per data center. See `../installer/charts/dr-controlplane/values.yaml` for all
 settings.
 
 ## Mark a workload cross DC

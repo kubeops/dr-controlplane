@@ -297,6 +297,8 @@ $(BUILD_DIRS):
 REGISTRY_SECRET   ?=
 IMAGE_PULL_POLICY ?= IfNotPresent
 KUBE_NAMESPACE    ?= dc-failover
+# The chart lives in the kubeops.dev/installer repo.
+CHART_DIR         ?= ../installer/charts/dr-controlplane
 # OCM control plane image that serves the Lease API on external etcd.
 CONTROLPLANE_IMAGE ?=
 
@@ -308,7 +310,7 @@ endif
 
 .PHONY: install
 install:
-	helm upgrade -i dr-controlplane charts/dr-controlplane --wait \
+	helm upgrade -i dr-controlplane $(CHART_DIR) --wait \
 		--namespace=$(KUBE_NAMESPACE) --create-namespace \
 		--set image.repository=$(IMAGE) \
 		--set image.tag=$(TAG) \

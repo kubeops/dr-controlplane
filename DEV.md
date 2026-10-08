@@ -18,7 +18,7 @@ pkg/leases                 lease naming + annotation contract, the Scope type
 pkg/agent                  health lease, leader election, coordinated handoff, metrics
 pkg/topology               derive topology from PlacementPolicy, ensure the Leases
 pkg/client                 consumer library (read the failover signal)
-charts/dr-controlplane     Helm chart (etcd, control plane, agent, controller)
+(chart)                    Helm chart lives in kubeops.dev/installer, charts/dr-controlplane
 config/samples             example PlacementPolicies
 hack, Makefile, Dockerfile.*  AppsCode build harness
 vendor                     checked in dependencies
