@@ -16,7 +16,7 @@ require (
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 	kmodules.xyz/client-go v0.34.2
-	kubeops.dev/petset v0.1.1-0.20261005062345-a44e8d0f3fab
+	kubeops.dev/petset v0.2.1-0.20261008042136-e3473325563b
 	open-cluster-management.io/addon-framework v1.0.0
 	open-cluster-management.io/api v1.1.0
 	sigs.k8s.io/controller-runtime v0.22.4

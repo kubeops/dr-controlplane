@@ -1090,7 +1090,7 @@ kmodules.xyz/custom-resources/crds
 # kmodules.xyz/monitoring-agent-api v0.34.1
 ## explicit; go 1.24.0
 kmodules.xyz/monitoring-agent-api/api/v1
-# kubeops.dev/petset v0.1.1-0.20261005062345-a44e8d0f3fab
+# kubeops.dev/petset v0.2.1-0.20261008042136-e3473325563b
 ## explicit; go 1.24.0
 kubeops.dev/petset/apis/apps/v1
 kubeops.dev/petset/crds
