@@ -4,7 +4,7 @@ This file provides guidance to coding agents (e.g. Claude Code, claude.ai/code) 
 
 ## Repository purpose
 
-Go module `github.com/kluster-manager/dr-controlplane` produces a single binary, `dr-controlplane`, the common DC failover service. It runs a three data center etcd quorum and an OCM control plane that serves the standard `coordination.k8s.io` Lease API as the cross data center failover signal. Other applications, starting with the KubeDB DC/DR driver, read that Lease to decide which data center is primary.
+Go module `kubeops.dev/dr-controlplane` produces a single binary, `dr-controlplane`, the common DC failover service. It runs a three data center etcd quorum and an OCM control plane that serves the standard `coordination.k8s.io` Lease API as the cross data center failover signal. Other applications, starting with the KubeDB DC/DR driver, read that Lease to decide which data center is primary.
 
 The split brain guarantee is the etcd majority: moving a Lease is an etcd write that needs a majority, so a partitioned minority cannot renew and self fences. The service never promotes or demotes a workload itself; it only publishes which data center the quorum trusts.
 
@@ -58,7 +58,7 @@ go test ./pkg/topology/... -run TestDeriveTwoDCWithArbiter -v
 
 ## Conventions
 
-- Module path is `github.com/kluster-manager/dr-controlplane`; keep imports on it. The `dr.open-cluster-management.io/*` Lease annotation keys in `pkg/leases` are unrelated to the module path and must not be renamed with it.
+- Module path is `kubeops.dev/dr-controlplane`; keep imports on it. The `dr.open-cluster-management.io/*` Lease annotation keys in `pkg/leases` are unrelated to the module path and must not be renamed with it.
 - License is the **AppsCode Free Trial License 1.0.0** (`LICENSE.md`). New files need the standard "Copyright AppsCode Inc. and Contributors" header; `hack/license/` holds the templates and `make add-license` stamps them.
 - Logging is `k8s.io/klog/v2` everywhere. Use `klog.InfoS` / `klog.ErrorS` structured logging, not `fmt` or other loggers.
 - The vendor directory is checked in; `verify-modules` fails if `go mod tidy && go mod vendor` is not clean.

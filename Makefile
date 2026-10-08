@@ -14,7 +14,7 @@
 
 SHELL=/bin/bash -o pipefail
 
-GO_PKG   := github.com/kluster-manager
+GO_PKG   := kubeops.dev
 REPO     := $(notdir $(shell pwd))
 BIN      := dr-controlplane
 COMPRESS ?= no

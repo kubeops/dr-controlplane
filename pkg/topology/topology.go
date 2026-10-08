@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/kluster-manager/dr-controlplane/pkg/leases"
+	"kubeops.dev/dr-controlplane/pkg/leases"
 
 	appsv1 "kubeops.dev/petset/apis/apps/v1"
 )

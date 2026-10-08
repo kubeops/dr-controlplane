@@ -10,9 +10,9 @@ keywords:
   - lease
   - open-cluster-management
   - kubedb
-home: https://github.com/kluster-manager/dr-controlplane
+home: https://github.com/kubeops/dr-controlplane
 sources:
-  - https://github.com/kluster-manager/dr-controlplane
+  - https://github.com/kubeops/dr-controlplane
 maintainers:
   - name: AppsCode Inc.
     email: support@appscode.com

@@ -143,8 +143,8 @@ acquires the Lease without a race.
 
 ```go
 import (
-    drclient "github.com/kluster-manager/dr-controlplane/pkg/client"
-    "github.com/kluster-manager/dr-controlplane/pkg/leases"
+    drclient "kubeops.dev/dr-controlplane/pkg/client"
+    "kubeops.dev/dr-controlplane/pkg/leases"
 )
 
 c := drclient.New(clientset, leases.DefaultNamespace, "dc-a")
