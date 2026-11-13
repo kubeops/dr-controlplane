@@ -43,6 +43,11 @@ const MemberReportTTL = 5 * time.Minute
 
 // LeaseView is the part of a group's primary DC Lease the decision needs.
 type LeaseView struct {
+	// HandoffTo is the handoff-to annotation, empty when unset.
+	HandoffTo string
+	// HandoffRequest is the handoff-request annotation, empty when unset (see
+	// leases.AnnHandoffRequest).
+	HandoffRequest string
 	// Exists is false when the Lease has not been created yet.
 	Exists bool
 	// Holder is spec.holderIdentity.

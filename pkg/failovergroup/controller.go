@@ -129,12 +129,16 @@ func (c *Controller) reconcile(ctx context.Context) {
 		if d.SwitchoverTo != "" {
 			c.requestSwitchover(ctx, g, d.SwitchoverTo)
 		}
+		if lease != nil {
+			c.syncHandoff(ctx, g, lease, view, d, now)
+		}
 		if err := c.applyStatus(ctx, g, leaseName, view.Holder, d, now); err != nil {
 			klog.ErrorS(err, "failed to update FailoverGroup status", "group", g.Name)
 		}
 	}
 
 	c.clearStaleFollowDC(ctx, groups)
+	c.clearStaleHandoff(ctx, groups)
 }
 
 // leaseView reads a group's primary DC Lease and, when it has a holder, that
@@ -151,6 +155,9 @@ func (c *Controller) leaseView(ctx context.Context, name string, now time.Time) 
 		Exists:    true,
 		MemberDCs: memberList(l.Annotations[leases.AnnMemberDCs]),
 		FollowDC:  l.Annotations[leases.AnnFollowDC],
+
+		HandoffTo:      l.Annotations[leases.AnnHandoffTo],
+		HandoffRequest: l.Annotations[leases.AnnHandoffRequest],
 	}
 	if l.Spec.HolderIdentity != nil {
 		v.Holder = *l.Spec.HolderIdentity
@@ -303,5 +310,81 @@ func (c *Controller) applyStatus(ctx context.Context, g *appsv1.FailoverGroup, l
 		"status":     st,
 	}}
 	_, err = c.hub.Resource(FailoverGroupGVR).ApplyStatus(ctx, g.Name, obj, metav1.ApplyOptions{FieldManager: fieldManager, Force: true})
+	return err
+}
+
+// dcAlive reports whether dc's health Lease is fresh.
+func (c *Controller) dcAlive(ctx context.Context, dc string, now time.Time) bool {
+	h, err := c.coord.CoordinationV1().Leases(c.ns).Get(ctx, leases.HealthLeaseName(dc), metav1.GetOptions{})
+	return err == nil && leaseFresh(h, now)
+}
+
+// syncHandoff turns the members' handoffTo requests into the handoff-to
+// annotation on the group's Lease, and takes it back when they stop asking. It
+// only ever touches a handoff-to it wrote itself (leases.AnnHandoffRequest).
+func (c *Controller) syncHandoff(ctx context.Context, g *appsv1.FailoverGroup, l *coordinationv1.Lease, view LeaseView, d Decision, now time.Time) {
+	dependencyTarget := ""
+	if len(g.Spec.DependsOn) > 0 {
+		dependencyTarget = d.Target
+	}
+	// Probing the target's health Lease only matters when a request is pending.
+	alive := func(dc string) bool { return c.dcAlive(ctx, dc, now) }
+
+	agreed := AgreedHandoff(g, now)
+	patch := PlanHandoff(view, agreed, HandoffRequest(g, view, dependencyTarget, alive, now))
+	if patch == nil {
+		return
+	}
+	if err := c.patchLeaseAnnotations(ctx, l, patch); err != nil {
+		klog.ErrorS(err, "failed to update the handoff request on the group's Lease", "group", g.Name, "lease", l.Name)
+		return
+	}
+	klog.InfoS("updated the handoff request on a group's Lease", "group", g.Name, "lease", l.Name, "annotations", patch)
+}
+
+// clearStaleHandoff withdraws a handoff this controller requested for a group
+// that no longer exists, so a deleted FailoverGroup cannot leave a Lease pinned.
+func (c *Controller) clearStaleHandoff(ctx context.Context, groups map[string]*appsv1.FailoverGroup) {
+	list, err := c.coord.CoordinationV1().Leases(c.ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.ErrorS(err, "failed to list Leases for handoff cleanup")
+		return
+	}
+	for i := range list.Items {
+		l := &list.Items[i]
+		if l.Annotations[leases.AnnHandoffRequest] == "" {
+			continue
+		}
+		scope, ok := leases.ScopeFromPrimaryLeaseName(l.Name)
+		if !ok {
+			continue
+		}
+		if _, exists := groups[scope.Group]; exists && !scope.IsGlobal() {
+			continue
+		}
+		view := LeaseView{HandoffTo: l.Annotations[leases.AnnHandoffTo], HandoffRequest: l.Annotations[leases.AnnHandoffRequest]}
+		patch := PlanHandoff(view, "", "")
+		if patch == nil {
+			continue
+		}
+		if err := c.patchLeaseAnnotations(ctx, l, patch); err != nil {
+			klog.ErrorS(err, "failed to clear a stale handoff request", "lease", l.Name)
+		}
+	}
+}
+
+// patchLeaseAnnotations merge patches annotations (a nil value removes one). The
+// patch carries the resourceVersion the decision was made on, so it is refused
+// if the Lease changed since (an agent clearing handoff-to, an operator writing
+// its own); the next pass decides again from fresh state.
+func (c *Controller) patchLeaseAnnotations(ctx context.Context, l *coordinationv1.Lease, annotations map[string]any) error {
+	raw, err := json.Marshal(map[string]any{"metadata": map[string]any{
+		"resourceVersion": l.ResourceVersion,
+		"annotations":     annotations,
+	}})
+	if err != nil {
+		return err
+	}
+	_, err = c.coord.CoordinationV1().Leases(c.ns).Patch(ctx, l.Name, types.MergePatchType, raw, metav1.PatchOptions{})
 	return err
 }

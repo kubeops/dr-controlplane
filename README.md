@@ -126,6 +126,16 @@ spec:
   the dependencies are ready.
 - After a planned switchover of a dependency, the controller asks the dependent
   group's databases to follow with `dr.kubedb.com/switchover-to`.
+- A member that does not hand the Lease over itself (an application tier, not a
+  database engine) can ask the controller to do it by setting `handoffTo` on its
+  entry in `status.members`. The controller then sets `handoff-to` on the group's
+  Lease, together with `dr.open-cluster-management.io/handoff-request`, only when
+  every member of the group asks for the same data center with a fresh report, the
+  target is a Member other than the holder with a fresh health Lease, the holder
+  is alive, and a group with dependencies is moving to where its dependencies are
+  active. It withdraws the request when the members stop asking. A `handoff-to`
+  written by an engine operator or by `dr-controlplane switchover` carries no
+  `handoff-request` and is never touched.
 
 ## Operate
 
