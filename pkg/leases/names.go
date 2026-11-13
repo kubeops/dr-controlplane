@@ -50,6 +50,16 @@ const (
 	// target acquires. Cleared once the target holds the Lease.
 	AnnHandoffTo = "dr.open-cluster-management.io/handoff-to"
 
+	// AnnHandoffRequest marks a handoff-to that the FailoverGroup controller wrote
+	// on behalf of a group whose members asked for it (FailoverGroupMember.HandoffTo).
+	// Its value is the target data center, the same string as handoff-to. The
+	// controller treats a handoff-to as its own only when this annotation is
+	// present and equal to it, and never sets, changes or clears a handoff-to
+	// without it: the database engines and the switchover CLI write handoff-to
+	// directly and are untouched. The agent does not know this annotation; it only
+	// clears handoff-to, so the controller removes a leftover companion itself.
+	AnnHandoffRequest = "dr.open-cluster-management.io/handoff-request"
+
 	// AnnScope records the trigger scope (Global or the group name) for observability.
 	AnnScope = "dr.open-cluster-management.io/scope"
 
