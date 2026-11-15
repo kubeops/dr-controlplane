@@ -113,3 +113,22 @@ func TestValidateSpreadRejectsTwoRegions(t *testing.T) {
 		t.Fatalf("expected spread validation to fail with only two regions")
 	}
 }
+
+func TestDeriveTopologyMembers(t *testing.T) {
+	// A database with node roles (Elasticsearch topology mode) places its roles through the
+	// rule's topology and leaves replicaIndices empty. Its Members must still be Members.
+	fp := &appsv1.FailoverPolicy{Mode: appsv1.FailoverModeTwoDC, FailoverGroupRef: &core.LocalObjectReference{Name: "es-topo"}}
+	a := appsv1.DistributionRule{ClusterName: "dc-a", Role: appsv1.DCRoleMember, Topology: map[string][]int32{"master": {0, 1, 2}, "data": {0, 1}}}
+	b := appsv1.DistributionRule{ClusterName: "dc-b", Role: appsv1.DCRoleMember, Topology: map[string][]int32{"master": {3, 4, 5}, "data": {2, 3}}}
+	topo, errs := Derive([]*appsv1.PlacementPolicy{pp("es-topo", fp, a, b, arbiter("dc-c"))})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	st := topo.Scopes["primary-dc-es-topo"]
+	if st == nil {
+		t.Fatalf("expected the group scope primary-dc-es-topo, got %v", topo.Scopes)
+	}
+	if strings.Join(st.Members, ",") != "dc-a,dc-b" || strings.Join(st.Arbiters, ",") != "dc-c" {
+		t.Fatalf("members = %v arbiters = %v, want [dc-a dc-b] [dc-c]", st.Members, st.Arbiters)
+	}
+}
