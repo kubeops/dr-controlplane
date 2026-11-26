@@ -77,7 +77,7 @@ func TestNonWriterAlwaysHealthy(t *testing.T) {
 
 // TestWriterPromotionReseedsHealthWindow pins the transition hazard: a replica that
 // was a standby for hours flips to writer semantics the moment it wins the election.
-// writerRunnable re-seeds the window before flipping the role so a brand-new writer
+// runWriterTerm re-seeds the window before flipping the role so a brand-new writer
 // starts inside it even if credential failures follow immediately.
 func TestWriterPromotionReseedsHealthWindow(t *testing.T) {
 	a := New(Options{}, nil, nil, nil)

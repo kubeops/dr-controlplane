@@ -18,6 +18,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"kubeops.dev/dr-controlplane/pkg/leases"
@@ -91,6 +92,37 @@ type Options struct {
 	// priority-and-fairness is the real backpressure.
 	ClientQPS   float32
 	ClientBurst int
+
+	// WriterIdentity is this replica's holder identity in the spoke-local writer
+	// election. It must be stable across container restarts of the same pod: a
+	// restarted container that comes back with the identity still recorded in the
+	// writer Lease renews it at once instead of waiting a full
+	// WriterElection.LeaseDuration for its own previous incarnation to expire
+	// (measured live at 15s, half the fence TTL, on every agent restart). The pod
+	// name is the right value (POD_NAME from the downward API); two live processes
+	// can never share it. Defaults to POD_NAME, then the hostname.
+	WriterIdentity string
+
+	// HolderPriorityWindow protects the current primary DC after an outage that
+	// hit every DC at once (a hub or etcd brownout longer than the primary Lease
+	// duration). When the hub comes back the Lease has expired for everyone and
+	// plain leader election makes it a race the healthy holder can lose. With
+	// this window, a NON-holder may take an expired Lease over only after its own
+	// hub writes (the DC health Lease renewals) have succeeded without a break
+	// for this long. The holder renews at once on recovery, so it keeps the
+	// Lease. A real DC loss is unaffected: the survivor's hub writes never broke,
+	// so it acquires at the usual Lease expiry. Zero disables the guard.
+	HolderPriorityWindow time.Duration
+}
+
+// defaultWriterIdentity is POD_NAME when the downward API sets it, else the
+// hostname (which a Deployment pod also sets to the pod name).
+func defaultWriterIdentity() string {
+	if v := os.Getenv("POD_NAME"); v != "" {
+		return v
+	}
+	h, _ := os.Hostname()
+	return h
 }
 
 // DefaultOptions returns conservative WAN friendly defaults.
@@ -121,8 +153,10 @@ func DefaultOptions() Options {
 			RenewDeadline: 10 * time.Second,
 			RetryPeriod:   2 * time.Second,
 		},
-		ClientQPS:   50000,
-		ClientBurst: 50000,
+		ClientQPS:            50000,
+		ClientBurst:          50000,
+		WriterIdentity:       defaultWriterIdentity(),
+		HolderPriorityWindow: 20 * time.Second,
 	}
 }
 
@@ -145,6 +179,8 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.WriterElection.LeaseDuration, "writer-lease-duration", o.WriterElection.LeaseDuration, "Spoke-local writer election Lease duration (bounds takeover after a writer pod crash; keep well under the 30s fence TTL).")
 	fs.DurationVar(&o.WriterElection.RenewDeadline, "writer-renew-deadline", o.WriterElection.RenewDeadline, "Spoke-local writer election renew deadline.")
 	fs.DurationVar(&o.WriterElection.RetryPeriod, "writer-retry-period", o.WriterElection.RetryPeriod, "Spoke-local writer election retry period.")
+	fs.StringVar(&o.WriterIdentity, "writer-identity", o.WriterIdentity, "Holder identity in the spoke-local writer election. Must be unique per pod and stable across container restarts; defaults to POD_NAME, then the hostname.")
+	fs.DurationVar(&o.HolderPriorityWindow, "holder-priority-window", o.HolderPriorityWindow, "A non-holder DC may take over an expired primary DC Lease only after its own hub writes have succeeded without a break for this long, so the holder keeps the Lease after an outage that hit every DC. 0 disables.")
 }
 
 // Validate checks the options.
@@ -169,6 +205,12 @@ func (o Options) Validate() error {
 	}
 	if o.WriterElection.RetryPeriod <= 0 || o.WriterElection.RetryPeriod >= o.WriterElection.RenewDeadline {
 		return fmt.Errorf("writer-retry-period must be positive and less than writer-renew-deadline")
+	}
+	if o.WriterIdentity == "" {
+		return fmt.Errorf("--writer-identity is required (set POD_NAME or pass the flag)")
+	}
+	if o.HolderPriorityWindow < 0 {
+		return fmt.Errorf("--holder-priority-window must not be negative")
 	}
 	return nil
 }

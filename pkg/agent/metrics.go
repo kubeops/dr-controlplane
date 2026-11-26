@@ -28,6 +28,8 @@ type Metrics struct {
 	ObservationRepairs  prometheus.Counter
 	InformerRebuilds    prometheus.Counter
 	IsWriter            prometheus.Gauge
+	WriterStepDowns     prometheus.Counter
+	TakeoversDeferred   *prometheus.CounterVec
 }
 
 // NewMetrics registers and returns the agent metrics.
@@ -74,7 +76,17 @@ func NewMetrics(reg prometheus.Registerer, dc string) *Metrics {
 			Help:        "1 on the replica holding the spoke-local writer role (the only replica allowed to write markers, hub Leases, and override annotations).",
 			ConstLabels: cl,
 		}),
+		WriterStepDowns: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "dr", Subsystem: "agent", Name: "writer_step_downs_total",
+			Help:        "Count of times this replica lost the spoke-local writer role and stepped down in process (it keeps running and contends again).",
+			ConstLabels: cl,
+		}),
+		TakeoversDeferred: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "dr", Subsystem: "agent", Name: "takeovers_deferred_total",
+			Help:        "Count of expired primary DC Lease takeovers this DC deferred because its own hub writes had not been healthy for the holder priority window (the holder gets the first chance after a shared outage).",
+			ConstLabels: cl,
+		}, []string{"scope"}),
 	}
-	reg.MustRegister(m.IsPrimary, m.Contending, m.ElectionTransitions, m.HealthRenewals, m.HealthRenewErrors, m.ObservationRepairs, m.InformerRebuilds, m.IsWriter)
+	reg.MustRegister(m.IsPrimary, m.Contending, m.ElectionTransitions, m.HealthRenewals, m.HealthRenewErrors, m.ObservationRepairs, m.InformerRebuilds, m.IsWriter, m.WriterStepDowns, m.TakeoversDeferred)
 	return m
 }

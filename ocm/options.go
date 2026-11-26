@@ -115,6 +115,15 @@ type AgentOptions struct {
 	ElectionLeaseDuration time.Duration
 	ElectionRenewDeadline time.Duration
 	ElectionRetryPeriod   time.Duration
+
+	// HolderPriorityWindow is the agent --holder-priority-window: after an
+	// outage that hit every DC, a non-holder takes an expired primary DC Lease
+	// over only once its own hub writes have been healthy this long.
+	HolderPriorityWindow time.Duration
+	// PriorityClassName for the agent pods. Empty leaves the cluster default.
+	PriorityClassName string
+	// LogLevel is the agent klog verbosity.
+	LogLevel int
 }
 
 // NewAgentOptions returns the defaults, seeded from the environment where an env
@@ -131,15 +140,19 @@ func NewAgentOptions() AgentOptions {
 		ImageRegistry:                   envOr("AGENT_IMAGE_REGISTRY", defaultAgentImageRegistry),
 		ImageRepository:                 envOr("AGENT_IMAGE_REPOSITORY", defaultAgentImageRepository),
 		ImageTag:                        os.Getenv("AGENT_IMAGE_TAG"),
-		Replicas:                        envIntOr("AGENT_REPLICAS", 1),
+		Replicas:                        envIntOr("AGENT_REPLICAS", 2),
+		PriorityClassName:               envOr("AGENT_PRIORITY_CLASS_NAME", "system-cluster-critical"),
+		LogLevel:                        envIntOr("AGENT_LOG_LEVEL", 2),
+		HolderPriorityWindow:            20 * time.Second,
 		ImagePullSecrets:                envListOr("AGENT_IMAGE_PULL_SECRETS", nil),
 		HealthLeaseDuration:             15 * time.Second,
 		HealthRenewInterval:             5 * time.Second,
-		// Matches the live production agents: 45s/40s/5s. Do not lower
-		// ElectionLeaseDuration below markerFenceTTL, Validate rejects it.
+		// 45s/40s/3s. Do not lower ElectionLeaseDuration below markerFenceTTL,
+		// Validate rejects it. The retry period was 5s; 3s gives the marker more
+		// margin before it reads stale on a healthy DC.
 		ElectionLeaseDuration: 45 * time.Second,
 		ElectionRenewDeadline: 40 * time.Second,
-		ElectionRetryPeriod:   5 * time.Second,
+		ElectionRetryPeriod:   3 * time.Second,
 	}
 }
 
@@ -164,7 +177,13 @@ func (o *AgentOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.ImageRepository, "agent-image-repository", o.ImageRepository,
 		"Image repository name for the agent Deployment on managed clusters.")
 	fs.IntVar(&o.Replicas, "agent-replicas", o.Replicas,
-		"Agent pod replicas per spoke. Extra replicas are pod crash insurance only; they share the DC identity and add no quorum weight.")
+		"Agent pod replicas per spoke. 2 is recommended on every spoke: one writer plus a hot standby that takes over a crashed writer inside the fence TTL. Replicas add no quorum weight.")
+	fs.StringVar(&o.PriorityClassName, "agent-priority-class-name", o.PriorityClassName,
+		"priorityClassName for the agent pods, so they are not preempted or evicted first. Empty leaves the cluster default.")
+	fs.IntVar(&o.LogLevel, "agent-log-level", o.LogLevel,
+		"Agent klog verbosity. 2 logs failed Lease renewals, the early warning for a false failover.")
+	fs.DurationVar(&o.HolderPriorityWindow, "agent-holder-priority-window", o.HolderPriorityWindow,
+		"After an outage that hit every DC, a non-holder DC takes an expired primary DC Lease over only once its own hub writes have been healthy this long. 0 disables.")
 	fs.StringVar(&o.ImageTag, "agent-image-tag", o.ImageTag,
 		"Image tag for the agent Deployment. Empty falls back to the agent chart appVersion.")
 	fs.StringSliceVar(&o.ImagePullSecrets, "agent-image-pull-secrets", o.ImagePullSecrets,
@@ -208,6 +227,12 @@ func (o AgentOptions) Validate() error {
 	}
 	if o.ElectionRetryPeriod <= 0 || o.ElectionRetryPeriod >= o.ElectionRenewDeadline {
 		return fmt.Errorf("--agent-election-retry-period must be positive and less than --agent-election-renew-deadline")
+	}
+	if o.HolderPriorityWindow < 0 {
+		return fmt.Errorf("--agent-holder-priority-window must not be negative")
+	}
+	if o.LogLevel < 0 {
+		return fmt.Errorf("--agent-log-level must not be negative")
 	}
 	return nil
 }

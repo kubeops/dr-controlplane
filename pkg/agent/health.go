@@ -94,5 +94,5 @@ func (a *Agent) renewHealth(ctx context.Context, name string) {
 		return
 	}
 	a.metrics.HealthRenewals.Inc()
-	a.noteHealthOK()
+	a.noteHealthRenewed(time.Now())
 }
