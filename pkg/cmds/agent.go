@@ -52,6 +52,7 @@ func runAgent(ctx context.Context, opts agent.Options) error {
 	// The writer manager (controller-runtime) logs through logr; without this
 	// its first log attempt prints a "SetLogger was never called" stack trace.
 	ctrl.SetLogger(klog.NewKlogr())
+	agent.SetMemoryLimitFromCgroup()
 
 	cfg, err := opts.RESTConfig()
 	if err != nil {

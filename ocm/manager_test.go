@@ -22,7 +22,10 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"open-cluster-management.io/addon-framework/pkg/addonfactory"
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
@@ -133,7 +136,9 @@ func TestAgentDeploymentCarriesInjectedValues(t *testing.T) {
 		"--namespace=dc-failover",
 		"--election-lease-duration=45s",
 		"--election-renew-deadline=40s",
-		"--election-retry-period=5s",
+		"--election-retry-period=3s",
+		"--holder-priority-window=20s",
+		"--v=2",
 		"--health-lease-duration=15s",
 		"--health-renew-interval=5s",
 	} {
@@ -162,5 +167,97 @@ func TestValidateRejectsElectionLeaseInsideFenceTTL(t *testing.T) {
 		if err := bad.Validate(); err == nil {
 			t.Errorf("election lease duration %s accepted, want rejected", d)
 		}
+	}
+}
+
+func renderDeployment(t *testing.T, opts AgentOptions) (*appsv1.Deployment, *policyv1.PodDisruptionBudget) {
+	t.Helper()
+	var deploy *appsv1.Deployment
+	var pdb *policyv1.PodDisruptionBudget
+	for _, obj := range renderAgent(t, opts) {
+		switch o := obj.(type) {
+		case *appsv1.Deployment:
+			deploy = o
+		case *policyv1.PodDisruptionBudget:
+			pdb = o
+		}
+	}
+	if deploy == nil {
+		t.Fatal("no Deployment rendered")
+	}
+	return deploy, pdb
+}
+
+func envValue(c corev1.Container, name string) (corev1.EnvVar, bool) {
+	for _, e := range c.Env {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return corev1.EnvVar{}, false
+}
+
+// The false-failover hardening must reach every rendered agent: a hot standby,
+// surge-only rollouts, a PDB, a priority class, memory request = limit with no
+// CPU limit, the pod name as writer identity, and fast HTTP/2 dead-connection
+// detection.
+func TestAgentDeploymentFalseFailoverHardening(t *testing.T) {
+	deploy, pdb := renderDeployment(t, testOptions())
+
+	if got := *deploy.Spec.Replicas; got != 2 {
+		t.Errorf("replicas = %d, want 2", got)
+	}
+	ru := deploy.Spec.Strategy.RollingUpdate
+	if ru == nil || ru.MaxUnavailable.IntValue() != 0 || ru.MaxSurge.IntValue() != 1 {
+		t.Errorf("rollout must be surge only (maxUnavailable 0, maxSurge 1), got %+v", ru)
+	}
+	if pdb == nil {
+		t.Fatal("no PodDisruptionBudget rendered with 2 replicas")
+	}
+	if pdb.Spec.MinAvailable == nil || pdb.Spec.MinAvailable.IntValue() != 1 {
+		t.Errorf("PDB minAvailable = %v, want 1", pdb.Spec.MinAvailable)
+	}
+
+	pod := deploy.Spec.Template.Spec
+	if pod.PriorityClassName != "system-cluster-critical" {
+		t.Errorf("priorityClassName = %q, want system-cluster-critical", pod.PriorityClassName)
+	}
+	c := pod.Containers[0]
+	req, lim := c.Resources.Requests[corev1.ResourceMemory], c.Resources.Limits[corev1.ResourceMemory]
+	if req.IsZero() || req.Cmp(lim) != 0 {
+		t.Errorf("memory request %v must equal the limit %v", req.String(), lim.String())
+	}
+	if want := resource.MustParse("256Mi"); lim.Cmp(want) != 0 {
+		t.Errorf("memory limit = %v, want 256Mi", lim.String())
+	}
+	if _, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+		t.Error("the agent must have no CPU limit: throttling stalls Lease renewals")
+	}
+
+	pn, ok := envValue(c, "POD_NAME")
+	if !ok || pn.ValueFrom == nil || pn.ValueFrom.FieldRef == nil || pn.ValueFrom.FieldRef.FieldPath != "metadata.name" {
+		t.Errorf("POD_NAME must come from metadata.name, got %+v", pn)
+	}
+	for name, want := range map[string]string{
+		"HTTP2_READ_IDLE_TIMEOUT_SECONDS": "10",
+		"HTTP2_PING_TIMEOUT_SECONDS":      "5",
+	} {
+		if e, ok := envValue(c, name); !ok || e.Value != want {
+			t.Errorf("%s = %q, want %q", name, e.Value, want)
+		}
+	}
+}
+
+// One replica must not render a PDB: minAvailable 1 would block every drain.
+func TestSingleReplicaRendersNoPDB(t *testing.T) {
+	opts := testOptions()
+	opts.Replicas = 1
+	opts.PriorityClassName = ""
+	deploy, pdb := renderDeployment(t, opts)
+	if pdb != nil {
+		t.Error("a single replica must not get a PDB")
+	}
+	if deploy.Spec.Template.Spec.PriorityClassName != "" {
+		t.Error("an empty priority class must leave the field unset")
 	}
 }

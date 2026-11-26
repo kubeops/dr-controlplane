@@ -106,6 +106,16 @@ A workload's PlacementPolicy `failoverPolicy.trigger` selects which Lease it fol
 - A Witness only loss: the Witness never held the Lease, so nothing moves.
 - Two data centers lost at once: no etcd majority remains, so the Lease becomes unchangeable. The decision freezes rather than guessing. This is the correct safe behavior for a quorum system, and recovery requires restoring a quorum.
 
+## Avoiding false failovers
+
+A failover must mean the primary data center is gone, not that its agent hiccupped. Because the database fences itself read only once the marker is about 30s old and the Lease moves at 45s, an agent gap of about 30s already costs a write outage, and the gap before a false failover is small. So the agent is built to keep the gap short:
+
+- Two replicas per data center. One holds the spoke-local writer Lease; the other is a hot standby with a warm hub view. Two is the recommendation on every spoke regardless of node count, because only one replica ever writes. Surge-only rollouts, a PodDisruptionBudget, a high priority class and memory request equal to the limit (with the Go soft memory limit at 90% of it) keep the pods from being stopped together, preempted, evicted or OOM killed.
+- In-process step-down. When the writer cannot renew its writer Lease (a short spoke API stall), it stops every write path and contends again in the same process. It used to exit, which cost a pod restart plus a full writer Lease expiry, about 30s.
+- A stable writer identity (the pod name). A restarted container finds its own identity in the writer Lease and renews it at once instead of waiting for it to expire.
+- Fast dead-connection detection. The chart sets `HTTP2_READ_IDLE_TIMEOUT_SECONDS=10` and `HTTP2_PING_TIMEOUT_SECONDS=5`; client-go's defaults detect a dead hub connection only after about 45s, the whole Lease.
+- Holder priority after a shared outage. A hub or etcd brownout longer than the Lease leaves it expired for every data center, and plain election would hand it to whoever retries first. A non-holder therefore takes an expired Lease from another data center only once its own health Lease renewals have succeeded without a break for `--holder-priority-window` (20s). The holder is never gated, so it renews first. In a real data center loss the survivor's renewals never broke and it acquires at the usual expiry.
+
 ## Client endpoint
 
 A kubeconfig has a single server URL, and the Kubernetes client does not fail over across endpoints on its own. So consumers and agents reach the control plane through one load balancer or GSLB in front of the apiserver replicas, named as that single server URL. Cross replica failover happens at the load balancer, not in the client.

@@ -76,8 +76,9 @@ func getValues(opts AgentOptions, restConfig *rest.Config, _ *certstore.CertStor
 				"repository": opts.ImageRepository,
 				"tag":        opts.ImageTag,
 			},
-			"imagePullSecrets": pullSecrets,
-			"replicas":         opts.Replicas,
+			"imagePullSecrets":  pullSecrets,
+			"replicas":          opts.Replicas,
+			"priorityClassName": opts.PriorityClassName,
 			"agent": map[string]interface{}{
 				"coordKubeconfigSecret": opts.CoordKubeconfigSecret,
 				// Ship the coordination credential itself so the agent can authenticate
@@ -94,6 +95,8 @@ func getValues(opts AgentOptions, restConfig *rest.Config, _ *certstore.CertStor
 					"renewDeadlineSeconds": seconds(opts.ElectionRenewDeadline),
 					"retryPeriodSeconds":   seconds(opts.ElectionRetryPeriod),
 				},
+				"holderPriorityWindowSeconds": seconds(opts.HolderPriorityWindow),
+				"logLevel":                    opts.LogLevel,
 			},
 		}
 		return values, nil

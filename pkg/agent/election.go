@@ -84,13 +84,19 @@ func (e *scopeElector) stop() { e.setDesired(false) }
 // re-contend loop.
 func (e *scopeElector) run(ctx context.Context) {
 	label := e.scope.String()
-	lock := &resourcelock.LeaseLock{
-		LeaseMeta: metav1.ObjectMeta{
-			Name:      e.scope.PrimaryLeaseName(),
-			Namespace: e.a.opts.Namespace,
+	// Wrapped so a takeover from another DC is held back until this DC's own
+	// hub writes have been healthy for HolderPriorityWindow (holderpriority.go).
+	lock := &holderPriorityLock{
+		Interface: &resourcelock.LeaseLock{
+			LeaseMeta: metav1.ObjectMeta{
+				Name:      e.scope.PrimaryLeaseName(),
+				Namespace: e.a.opts.Namespace,
+			},
+			Client:     e.a.cs.CoordinationV1(),
+			LockConfig: resourcelock.ResourceLockConfig{Identity: e.a.opts.DCName},
 		},
-		Client:     e.a.cs.CoordinationV1(),
-		LockConfig: resourcelock.ResourceLockConfig{Identity: e.a.opts.DCName},
+		a:     e.a,
+		scope: label,
 	}
 	cfg := leaderelection.LeaderElectionConfig{
 		Lock: lock,

@@ -55,6 +55,20 @@ type Agent struct {
 	// construction so process startup is covered by the same staleness window.
 	lastHealthOK atomic.Int64
 
+	// lastRenewOK and healthStreakStart (UnixNano) track only REAL health Lease
+	// renewals, never the seeding noteHealthOK does: the time of the last one
+	// and the start of the current unbroken run of them. The holder priority
+	// guard reads them (see holderpriority.go). Zero means no evidence yet.
+	lastRenewOK       atomic.Int64
+	healthStreakStart atomic.Int64
+
+	// writerCtx is the context of the current writer term, nil while this
+	// replica is not the writer. Electors and the handoff writes run under it,
+	// so a step-down cancels every in-flight hub write at once (see writer.go).
+	// Guarded by mu.
+	writerCtx  context.Context
+	writerDone chan struct{}
+
 	// aux is a second clientset for the liveness-critical paths (health Lease renewal
 	// and the observation watchdog's List). It shares the server but NOT the rate
 	// limiter with cs, so a flood of elector traffic can never starve the health
@@ -193,9 +207,9 @@ func New(opts Options, cs, aux kubernetes.Interface, metrics *Metrics) *Agent {
 // Run starts the observation half on every replica (hub Lease informer plus the
 // watchdog), then hands control to the spoke writer manager. The write half
 // (health renewals, marker projection, electors, override reconciliation) runs
-// inside writerRunnable, which the manager starts only on the replica that wins
-// the spoke-local writer election. Losing the writer role stops the manager and
-// Run returns its error; the process exits and rejoins as a non-writer.
+// inside runWriterTerm, which starts only on the replica that wins the
+// spoke-local writer election. Losing the writer role steps this replica
+// down in process and it contends again (see writer.go).
 func (a *Agent) Run(ctx context.Context) error {
 	a.rootCtx = ctx
 
@@ -213,7 +227,15 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	go a.runObservationWatchdog(ctx)
 
-	if err := mgr.Add(writerRunnable{a}); err != nil {
+	spokeCfg, err := a.opts.SpokeRESTConfig()
+	if err != nil {
+		return err
+	}
+	spokeCS, err := kubernetes.NewForConfig(spokeCfg)
+	if err != nil {
+		return err
+	}
+	if err := mgr.Add(writerElection{a: a, cs: spokeCS}); err != nil {
 		return err
 	}
 	if err := mgr.Start(ctx); err != nil {
@@ -326,7 +348,9 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	// stays warm for takeover.
 	if a.isWriter.Load() {
 		contend := desiredContend(isMember, handoffTo, holder, a.opts.DCName, handoffTargetIsMember, overrideHold, standbyHold, followDC, followIsMember)
-		a.electorFor(scope, l.Name).setDesired(contend)
+		if e := a.electorFor(scope, l.Name); e != nil {
+			e.setDesired(contend)
+		}
 
 		// A coordinated handoff is the only path that actively moves the Lease: the
 		// holder steps aside by releasing it exactly once, after its elector has been
@@ -335,7 +359,9 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 		// path (agent restarts, member changes, override or standby holds) the Lease
 		// moves only by expiring after the holder stops renewing it.
 		if handoffTo != "" && handoffTargetIsMember && handoffTo != a.opts.DCName && holder == a.opts.DCName {
-			a.releaseForHandoff(a.rootCtx, l.Name, handoffTo)
+			if wctx := a.currentWriterCtx(); wctx != nil {
+				a.releaseForHandoff(wctx, l.Name, handoffTo)
+			}
 		}
 	}
 
@@ -357,19 +383,37 @@ func (a *Agent) reconcile(l *coordinationv1.Lease) {
 	// Once the target holds the Lease, the holder clears the handoff annotation
 	// so the system returns to normal contention. A hub write, so writer only.
 	if a.isWriter.Load() && handoffTo != "" && holder == handoffTo && holder == a.opts.DCName {
-		a.clearHandoff(a.rootCtx, l.Name)
+		if wctx := a.currentWriterCtx(); wctx != nil {
+			a.clearHandoff(wctx, l.Name)
+		}
 	}
 }
 
+// electorFor returns the scope's elector, creating it under the current writer
+// term. It returns nil when this replica is not the writer (or its term just
+// ended), so no elector can start outside a writer term.
 func (a *Agent) electorFor(scope leases.Scope, name string) *scopeElector {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.writerCtx == nil || a.writerCtx.Err() != nil {
+		return nil
+	}
 	e, ok := a.electors[name]
 	if !ok {
-		e = newScopeElector(a.rootCtx, a, scope)
+		e = newScopeElector(a.writerCtx, a, scope)
 		a.electors[name] = e
 	}
 	return e
+}
+
+// currentWriterCtx returns the context of the current writer term, or nil.
+func (a *Agent) currentWriterCtx() context.Context {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.writerCtx == nil || a.writerCtx.Err() != nil {
+		return nil
+	}
+	return a.writerCtx
 }
 
 func (a *Agent) stopAll() {
